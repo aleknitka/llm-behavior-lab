@@ -18,6 +18,7 @@ from llm_psych_scales.config import (
     DEFAULT_TIMEOUT_SECONDS,
 )
 from llm_psych_scales.models import ModelSettings, ProviderCapabilities
+from llm_psych_scales.personas.factory import PersonaGenerationConfig
 from llm_psych_scales.questionnaires.bfi10 import BFI_10
 from llm_psych_scales.runner import run_persona_questionnaire_batch
 
@@ -58,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--project-root", type=Path, default=DEFAULT_PROJECT_ROOT)
     parser.add_argument("--experiment-id", default=None)
     parser.add_argument("--persona-count", type=int, default=100)
+    parser.add_argument("--persona-config", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--log-level", choices=LOG_LEVELS, default="INFO")
     parser.add_argument(
@@ -102,6 +104,12 @@ def load_env_file(project_root: Path) -> dict[str, str]:
     return values
 
 
+def load_persona_config(path: Path | None) -> PersonaGenerationConfig:
+    if path is None:
+        return PersonaGenerationConfig()
+    return PersonaGenerationConfig.model_validate_json(path.read_text(encoding="utf-8"))
+
+
 def resolve_provider_config(
     cli_base_url: str | None,
     cli_api_key: str | None,
@@ -127,6 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     configure_logging(args.log_level)
     env_values = load_env_file(args.project_root)
+    persona_config = load_persona_config(args.persona_config)
     provider_config = resolve_provider_config(
         cli_base_url=args.base_url,
         cli_api_key=args.api_key,
@@ -159,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         experiment_id=args.experiment_id,
         persona_count=args.persona_count,
         seed=args.seed,
+        persona_config=persona_config,
     )
 
     failed = sum(run.error_count for run in result.runs)

@@ -5,9 +5,11 @@ import pytest
 from llm_psych_scales.main import (
     build_parser,
     load_env_file,
+    load_persona_config,
     parse_features,
     resolve_provider_config,
 )
+from llm_psych_scales.personas.factory import RequestedDemographicField
 
 
 def test_parse_features_converts_key_value_pairs() -> None:
@@ -30,6 +32,7 @@ def test_parser_defaults_to_bfi10_and_local_model() -> None:
     assert args.project_root == Path(".")
     assert args.experiment_id is None
     assert args.persona_count == 100
+    assert args.persona_config is None
     assert args.seed is None
     assert args.log_level == "INFO"
 
@@ -57,6 +60,25 @@ def test_load_env_file_reads_simple_key_value_pairs(tmp_path) -> None:
     assert values == {
         "OPENAI_BASE_URL": "http://localhost:9999/v1",
         "OPENAI_API_KEY": "secret",
+    }
+
+
+def test_load_persona_config_reads_weighted_field_probabilities(tmp_path) -> None:
+    config_path = tmp_path / "persona-config.json"
+    config_path.write_text(
+        '{"field_probabilities": {"country": {"PL": 0.8, "DE": 0.2}, '
+        '"affluence_level": {"middle": 1.0}}}',
+        encoding="utf-8",
+    )
+
+    config = load_persona_config(config_path)
+
+    assert config.field_probabilities[RequestedDemographicField.COUNTRY] == {
+        "PL": 0.8,
+        "DE": 0.2,
+    }
+    assert config.field_probabilities[RequestedDemographicField.AFFLUENCE_LEVEL] == {
+        "middle": 1.0
     }
 
 

@@ -17,6 +17,7 @@ from llm_psych_scales.personas.factory import (
     PersonaBatch,
     PersonaFactory,
     PersonaFactoryRequest,
+    PersonaGenerationConfig,
     RequestedDemographicField,
 )
 from llm_psych_scales.prompting import render_persona_intro
@@ -432,6 +433,7 @@ def run_persona_questionnaire_batch(
     experiment_id: str | None = None,
     persona_count: int = 100,
     seed: int | None = None,
+    persona_config: PersonaGenerationConfig | None = None,
 ) -> BatchRunResult:
     resolved_experiment_id = (
         validate_experiment_id(experiment_id) if experiment_id else generate_experiment_id(seed)
@@ -453,6 +455,7 @@ def run_persona_questionnaire_batch(
             requested_fields=set(RequestedDemographicField),
             seed=seed,
             experiment_id=resolved_experiment_id,
+            generation_config=persona_config or PersonaGenerationConfig(),
         )
     )
     personas_path = write_persona_batch_jsonl(project_root, personas)

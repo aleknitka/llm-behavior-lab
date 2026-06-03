@@ -15,6 +15,7 @@ class Gender(StrEnum):
     MALE = "male"
     NON_BINARY = "non_binary"
 
+
 class EducationLevel(StrEnum):
     PRIMARY = "primary"
     SECONDARY = "secondary"
@@ -129,6 +130,7 @@ class EuropeanCountry(StrEnum):
     JERSEY = "JE"
     SVALBARD_AND_JAN_MAYEN = "SJ"
 
+
 class ScaleScore(BaseModel):
     """
     Generic scale score.
@@ -176,6 +178,7 @@ class Demographics(BaseModel):
     education_level: EducationLevel | None = None
     field_of_study: str | None = None
     employment_status: EmploymentStatus | None = None
+    affluence_level: AffluenceLevel | None = None
     occupation: str | None = None
     country: EuropeanCountry | None = None
     region: str | None = None

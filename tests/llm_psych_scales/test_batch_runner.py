@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from loguru import logger
 
 from llm_psych_scales.models import LlmQuestionResult, ModelSettings
-from llm_psych_scales.personas.factory import RequestedDemographicField
+from llm_psych_scales.personas.factory import PersonaGenerationConfig, RequestedDemographicField
 from llm_psych_scales.questionnaires.base.scale import Questionnaire
 from llm_psych_scales.questionnaires.bfi10 import BFI_10
 from llm_psych_scales.runner import run_persona_questionnaire_batch
@@ -182,3 +182,33 @@ def test_batch_runner_logs_progress(tmp_path) -> None:
     assert "Starting persona run 1/2" in log_text
     assert "Starting persona run 2/2" in log_text
     assert "Completed persona questionnaire batch" in log_text
+
+
+def test_batch_runner_uses_persona_generation_config(tmp_path) -> None:
+    settings = ModelSettings(
+        model="openai/gpt-oss-20b",
+        provider_base_url="http://localhost:1234/v1",
+        temperature=0.2,
+        timeout_seconds=60.0,
+    )
+
+    result = run_persona_questionnaire_batch(
+        questionnaire=BFI_10,
+        settings=settings,
+        client=FakeBatchClient(),
+        project_root=tmp_path,
+        experiment_id="bfi10-lmstudio-test",
+        persona_count=3,
+        seed=17,
+        persona_config=PersonaGenerationConfig(
+            field_probabilities={
+                RequestedDemographicField.COUNTRY: {"PL": 1.0},
+                RequestedDemographicField.AFFLUENCE_LEVEL: {"middle": 1.0},
+            }
+        ),
+    )
+
+    assert {persona.features.country for persona in result.personas.personas} == {"PL"}
+    assert {persona.features.affluence_level for persona in result.personas.personas} == {
+        "middle"
+    }

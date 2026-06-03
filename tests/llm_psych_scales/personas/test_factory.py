@@ -6,10 +6,11 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from llm_psych_scales.personas.dimensions import EuropeanCountry
+from llm_psych_scales.personas.dimensions import AffluenceLevel, EuropeanCountry
 from llm_psych_scales.personas.factory import (
     PersonaFactory,
     PersonaFactoryRequest,
+    PersonaGenerationConfig,
     RequestedDemographicField,
 )
 from llm_psych_scales.storage import write_persona_batch_jsonl
@@ -149,6 +150,49 @@ def test_region_is_random_subdivision_from_selected_country() -> None:
         assert persona.features.country is not None
         assert persona.features.region is not None
         assert persona.features.region
+
+
+def test_weighted_config_restricts_country_and_affluence_choices() -> None:
+    batch = PersonaFactory().create_demographics_batch(
+        PersonaFactoryRequest(
+            count=20,
+            requested_fields={
+                RequestedDemographicField.COUNTRY,
+                RequestedDemographicField.AFFLUENCE_LEVEL,
+            },
+            seed=55,
+            experiment_id="weighted-study-one",
+            generation_config=PersonaGenerationConfig(
+                field_probabilities={
+                    RequestedDemographicField.COUNTRY: {
+                        EuropeanCountry.POLAND.value: 0.75,
+                        EuropeanCountry.GERMANY.value: 0.25,
+                    },
+                    RequestedDemographicField.AFFLUENCE_LEVEL: {
+                        AffluenceLevel.MIDDLE.value: 1.0
+                    },
+                }
+            ),
+        )
+    )
+
+    assert {
+        persona.features.country for persona in batch.personas
+    } <= {EuropeanCountry.POLAND, EuropeanCountry.GERMANY}
+    assert {persona.features.affluence_level for persona in batch.personas} == {
+        AffluenceLevel.MIDDLE
+    }
+
+
+def test_weighted_config_rejects_unknown_enum_value() -> None:
+    with pytest.raises(ValidationError, match="country"):
+        PersonaGenerationConfig(
+            field_probabilities={
+                RequestedDemographicField.COUNTRY: {
+                    "not-a-country": 1.0,
+                }
+            }
+        )
 
 
 def test_age_group_is_not_a_supported_requested_field() -> None:
