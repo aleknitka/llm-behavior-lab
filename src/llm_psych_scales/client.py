@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from typing import Any, Protocol, cast
 
+from loguru import logger
 from openai import AsyncOpenAI, OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
@@ -31,7 +32,12 @@ def _parse_choice(choice: Any) -> LlmQuestionResult:
     message = choice.message
     content = message.content or ""
     selected_answer_id = content.strip()
-    return LlmQuestionResult(selected_answer_id=selected_answer_id, raw_response=content)
+    logprobs = getattr(choice, "logprobs", None)
+    return LlmQuestionResult(
+        selected_answer_id=selected_answer_id,
+        raw_response=content,
+        logprobs=logprobs,
+    )
 
 
 def _openai_messages(messages: Sequence[Message]) -> list[ChatCompletionMessageParam]:
@@ -62,13 +68,27 @@ class OpenAiChatClient:
         settings: ModelSettings,
         allowed_answer_ids: Sequence[str],
     ) -> LlmQuestionResult:
-        response = self._client.chat.completions.create(
-            model=settings.model,
-            messages=_openai_messages(messages),
-            temperature=settings.temperature,
-            timeout=settings.timeout_seconds,
-            logprobs=settings.capabilities.supports_logprobs or None,
-        )
+        openai_messages = _openai_messages(messages)
+        logprobs = settings.capabilities.supports_logprobs or None
+        try:
+            response = self._client.chat.completions.create(
+                model=settings.model,
+                messages=openai_messages,
+                temperature=settings.temperature,
+                timeout=settings.timeout_seconds,
+                logprobs=logprobs,
+            )
+        except Exception:
+            if logprobs is not True:
+                raise
+            logger.warning("Provider rejected logprobs; retrying without logprobs")
+            response = self._client.chat.completions.create(
+                model=settings.model,
+                messages=openai_messages,
+                temperature=settings.temperature,
+                timeout=settings.timeout_seconds,
+                logprobs=None,
+            )
         result = _parse_choice(response.choices[0])
         if result.selected_answer_id is not None and not _is_selected_answer_allowed(
             result.selected_answer_id, allowed_answer_ids
@@ -87,13 +107,27 @@ class AsyncOpenAiChatClient:
         settings: ModelSettings,
         allowed_answer_ids: Sequence[str],
     ) -> LlmQuestionResult:
-        response = await self._client.chat.completions.create(
-            model=settings.model,
-            messages=_openai_messages(messages),
-            temperature=settings.temperature,
-            timeout=settings.timeout_seconds,
-            logprobs=settings.capabilities.supports_logprobs or None,
-        )
+        openai_messages = _openai_messages(messages)
+        logprobs = settings.capabilities.supports_logprobs or None
+        try:
+            response = await self._client.chat.completions.create(
+                model=settings.model,
+                messages=openai_messages,
+                temperature=settings.temperature,
+                timeout=settings.timeout_seconds,
+                logprobs=logprobs,
+            )
+        except Exception:
+            if logprobs is not True:
+                raise
+            logger.warning("Provider rejected logprobs; retrying without logprobs")
+            response = await self._client.chat.completions.create(
+                model=settings.model,
+                messages=openai_messages,
+                temperature=settings.temperature,
+                timeout=settings.timeout_seconds,
+                logprobs=None,
+            )
         result = _parse_choice(response.choices[0])
         if result.selected_answer_id is not None and not _is_selected_answer_allowed(
             result.selected_answer_id, allowed_answer_ids
