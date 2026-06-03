@@ -41,6 +41,7 @@ class ModelSettings(BaseModel):
     provider_base_url: str
     temperature: float
     timeout_seconds: float
+    seed: int | None = None
     capabilities: ProviderCapabilities = Field(default_factory=ProviderCapabilities)
 
 

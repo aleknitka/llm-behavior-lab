@@ -23,6 +23,7 @@ TEST_PERSONA = Persona(
 class FakeSyncClient:
     def __init__(self) -> None:
         self.calls: list[list[dict[str, str]]] = []
+        self.seeds: list[int | None] = []
 
     def complete(
         self,
@@ -31,6 +32,7 @@ class FakeSyncClient:
         allowed_answer_ids: Sequence[str],
     ) -> LlmQuestionResult:
         self.calls.append(list(messages))
+        self.seeds.append(settings.seed)
         return LlmQuestionResult(
             selected_answer_id=allowed_answer_ids[0],
             raw_response=allowed_answer_ids[0],
@@ -106,6 +108,39 @@ def test_run_questionnaire_retains_context_and_saves_records(tmp_path) -> None:
     assert "university degree" not in response_path.read_text(encoding="utf-8")
     assert run_rows[0]["error_count"] == 0
     assert run_rows[0]["item_count"] == len(BFI_10.items)
+
+
+def test_run_questionnaire_sets_and_persists_seed_for_each_item(tmp_path) -> None:
+    settings = ModelSettings(
+        model="llama3.1",
+        provider_base_url="http://localhost:11434/v1",
+        temperature=0.2,
+        timeout_seconds=60.0,
+        seed=123,
+    )
+    client = FakeSyncClient()
+
+    records = run_questionnaire(
+        persona=TEST_PERSONA,
+        questionnaire=BFI_10,
+        settings=settings,
+        client=client,
+        project_root=tmp_path,
+        experiment_id="pilot-study-one",
+    )
+
+    record_seeds = [record.metadata["seed"] for record in records]
+    assert client.seeds == record_seeds
+    assert len(set(record_seeds)) == len(BFI_10.items)
+    run_path = (
+        tmp_path
+        / "experiments"
+        / "pilot-study-one"
+        / records[0].run_id
+        / "run.jsonl"
+    )
+    run_row = json.loads(run_path.read_text(encoding="utf-8"))
+    assert run_row["metadata"]["base_seed"] == 123
 
 
 class FailingSyncClient:

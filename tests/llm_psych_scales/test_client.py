@@ -64,6 +64,29 @@ def test_openai_client_retries_without_logprobs_when_provider_rejects_them() -> 
     assert [call.get("logprobs") for call in completions.calls] == [True, None]
 
 
+def test_openai_client_passes_seed_to_provider() -> None:
+    completions = FakeCompletions()
+    client = OpenAiChatClient(api_key="test", base_url="http://localhost:1234/v1")
+    cast(Any, client)._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=completions)
+    )
+    settings = ModelSettings(
+        model="local-model",
+        provider_base_url="http://localhost:1234/v1",
+        temperature=0.0,
+        timeout_seconds=60.0,
+        seed=456,
+    )
+
+    client.complete(
+        messages=[{"role": "user", "content": "Question"}],
+        settings=settings,
+        allowed_answer_ids=["1", "2"],
+    )
+
+    assert completions.calls[0]["seed"] == 456
+
+
 def test_openai_client_persists_logprobs_when_provider_returns_them() -> None:
     class ReturningCompletions:
         def create(self, **kwargs):

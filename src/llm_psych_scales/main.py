@@ -144,6 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         provider_base_url=provider_config.base_url,
         temperature=args.temperature,
         timeout_seconds=args.timeout,
+        seed=args.seed,
         capabilities=ProviderCapabilities(
             supports_structured_outputs=args.structured_outputs,
             supports_logprobs=args.logprobs,

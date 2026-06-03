@@ -1,3 +1,4 @@
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -174,11 +175,15 @@ def _record_from_result(
     item: Item,
     messages: Sequence[Message],
     result: LlmQuestionResult,
+    seed: int | None = None,
 ) -> ItemResponseRecord:
     answer = _answer_from_result(item, result)
     status = ResponseStatus.FAILED if result.error else ResponseStatus.COMPLETED
     if result.error is None and answer is None:
         status = ResponseStatus.INVALID
+    metadata: dict[str, object] = {"experiment_id": experiment_id}
+    if seed is not None:
+        metadata["seed"] = seed
 
     return ItemResponseRecord(
         subject_id=subject_id,
@@ -197,7 +202,7 @@ def _record_from_result(
         logprobs=result.logprobs,
         status=status,
         error=result.error,
-        metadata={"experiment_id": experiment_id},
+        metadata=metadata,
     )
 
 
@@ -218,6 +223,13 @@ def _response_status(records: Sequence[ItemResponseRecord]) -> ResponseStatus:
     if any(record.status == ResponseStatus.INVALID for record in records):
         return ResponseStatus.INVALID
     return ResponseStatus.COMPLETED
+
+
+def _item_call_seed(base_seed: int | None, subject_id: str, item_id: str) -> int | None:
+    if base_seed is None:
+        return None
+    digest = hashlib.sha256(f"{base_seed}:{subject_id}:{item_id}".encode()).hexdigest()
+    return int(digest[:8], 16)
 
 
 def _run_record(
@@ -250,7 +262,7 @@ def _run_record(
         error_count=sum(1 for record in records if record.status == ResponseStatus.FAILED),
         item_count=len(records),
         output_paths=output_paths,
-        metadata={"scoring_model_id": None},
+        metadata={"scoring_model_id": None, "base_seed": settings.seed},
     )
 
 
@@ -332,9 +344,11 @@ def run_questionnaire(
         )
         messages = [*history, {"role": "user", "content": _question_prompt(item)}]
         allowed_answer_ids = _allowed_answer_ids(item.response_format)
+        call_seed = _item_call_seed(settings.seed, persona.persona_id, item.id)
+        call_settings = settings.model_copy(update={"seed": call_seed})
 
         try:
-            result = client.complete(messages, settings, allowed_answer_ids)
+            result = client.complete(messages, call_settings, allowed_answer_ids)
         except Exception as exc:
             logger.exception(
                 "Provider call failed item_id={item_id} run_id={run_id}",
@@ -352,6 +366,7 @@ def run_questionnaire(
             item,
             messages,
             result,
+            call_seed,
         )
         append_jsonl_record(paths.response_path_for_subject(persona.persona_id), record)
         records.append(record)
@@ -586,9 +601,11 @@ async def run_questionnaire_async(
         )
         messages = [*history, {"role": "user", "content": _question_prompt(item)}]
         allowed_answer_ids = _allowed_answer_ids(item.response_format)
+        call_seed = _item_call_seed(settings.seed, persona.persona_id, item.id)
+        call_settings = settings.model_copy(update={"seed": call_seed})
 
         try:
-            result = await client.complete(messages, settings, allowed_answer_ids)
+            result = await client.complete(messages, call_settings, allowed_answer_ids)
         except Exception as exc:
             logger.exception(
                 "Async provider call failed item_id={item_id} run_id={run_id}",
@@ -606,6 +623,7 @@ async def run_questionnaire_async(
             item,
             messages,
             result,
+            call_seed,
         )
         append_jsonl_record(paths.response_path_for_subject(persona.persona_id), record)
         records.append(record)

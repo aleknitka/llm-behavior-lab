@@ -76,6 +76,7 @@ class OpenAiChatClient:
                 messages=openai_messages,
                 temperature=settings.temperature,
                 timeout=settings.timeout_seconds,
+                seed=settings.seed,
                 logprobs=logprobs,
             )
         except Exception:
@@ -87,6 +88,7 @@ class OpenAiChatClient:
                 messages=openai_messages,
                 temperature=settings.temperature,
                 timeout=settings.timeout_seconds,
+                seed=settings.seed,
                 logprobs=None,
             )
         result = _parse_choice(response.choices[0])
@@ -115,6 +117,7 @@ class AsyncOpenAiChatClient:
                 messages=openai_messages,
                 temperature=settings.temperature,
                 timeout=settings.timeout_seconds,
+                seed=settings.seed,
                 logprobs=logprobs,
             )
         except Exception:
@@ -126,6 +129,7 @@ class AsyncOpenAiChatClient:
                 messages=openai_messages,
                 temperature=settings.temperature,
                 timeout=settings.timeout_seconds,
+                seed=settings.seed,
                 logprobs=None,
             )
         result = _parse_choice(response.choices[0])
