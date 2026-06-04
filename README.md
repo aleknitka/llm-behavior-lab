@@ -3,20 +3,26 @@
 ![Developed with Codex](https://img.shields.io/badge/developed%20with-Codex-111827?style=for-the-badge)
 
 Application for running LLM persona-based psychological questionnaire batches and saving
-JSONL data for later analysis.
+JSONL data for later analysis. The project is designed to support multiple
+questionnaires and extensible persona feature maps, so new instruments and new
+persona dimensions can be added without changing the core runner.
 
 This project was developed with OpenAI Codex.
 
-The current default workflow is:
+The current CLI workflow runs BFI-10 by default, while the questionnaire model and
+runner accept standardized questionnaire definitions:
 
 1. Generate a batch of demographic personas.
-2. Ask an OpenAI-compatible chat model to answer BFI-10 as each persona.
-3. Save one experiment directory containing the persona batch, run metadata, scale copy,
+2. Optionally expand those personas through a paired or factorial protocol that
+   manipulates selected persona fields across comparison conditions.
+3. Ask an OpenAI-compatible chat model to answer each questionnaire item as each
+   runtime persona.
+4. Save one experiment directory containing the persona batch, run metadata, scale copy,
    and one response file per generated subject.
 
 ## Quick Start
 
-Install dependencies and run the default LM Studio batch:
+Install dependencies and run the default BFI-10 LM Studio batch:
 
 ```bash
 uv sync
@@ -106,6 +112,10 @@ metadata at the experiment root. Each file under `responses/` contains one
 
 ## Persona Generation
 
+Persona features are intentionally selected from explicit typed fields. This keeps
+small experiments simple while making it straightforward to add more persona
+dimensions later in `src/llm_psych_scales/personas/`.
+
 Generate typed demographic personas directly:
 
 ```python
@@ -182,7 +192,10 @@ and `family_status`. Invalid enum values or non-positive probabilities are rejec
 ## Protocol Experiments
 
 Use `--protocol` for paired or factorial experiments where the same generated base
-persona is cloned across manipulated factor levels and repeated iterations.
+persona is cloned across manipulated factor levels and repeated iterations. This
+supports simple designs for comparing how selected persona parameters influence
+simulated questionnaire results while holding the remaining base persona features
+constant.
 
 Example `protocol.json`:
 
@@ -242,6 +255,10 @@ uv run llm-psych-scales \
   --api-key lm-studio
 ```
 
+The CLI currently runs the protocol with BFI-10. The protocol machinery is
+questionnaire-agnostic in the runner, so additional coded questionnaires can use the
+same persona expansion path from Python and can be exposed through the CLI later.
+
 For each generated base persona, the runner creates every factor-level cell and every
 iteration. In the example above, each base persona expands to `2 x 3 x 3 = 18`
 runtime subjects. Persona features stay identical within the same base/cell across
@@ -266,7 +283,8 @@ contains those assignment identifiers without duplicating the full persona snaps
 Questionnaires are coded as Python module-level constants under
 `src/llm_psych_scales/questionnaires/`. Use
 `llm_psych_scales.questionnaires.base.scale.Questionnaire` as the source-of-truth
-object for new instruments.
+object for new instruments. BFI-10 is the first coded questionnaire, not the intended
+limit of the project.
 
 The base structure separates questionnaire definitions from runtime output:
 

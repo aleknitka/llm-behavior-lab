@@ -4,12 +4,19 @@
 
 This repository is an application for running LLM-based psychological questionnaire sessions with generated personas.
 
+The project should grow beyond a single questionnaire or fixed persona set. It is
+intended to support multiple standardized questionnaires, extensible persona feature
+maps, and simple experimental designs that compare how selected persona parameters
+influence simulated questionnaire results.
+
 The app should allow a user to:
 
 1. Create a persona from demographic inputs selected from a map of available features.
 2. Ask an OpenAI-compatible LLM to assume that persona.
-3. Run a chat session with that persona by asking multiple-choice questions from standard psychological questionnaires.
-4. Save response data in JSONL format for later analysis.
+3. Optionally expand generated personas through paired or factorial protocol designs
+   that manipulate selected fields while keeping the remaining base persona stable.
+4. Run a chat session with that persona by asking questions from standard psychological questionnaires.
+5. Save response data in JSONL format for later analysis.
 
 ## Development Approach
 
@@ -19,6 +26,9 @@ The app should allow a user to:
 - Do not create unnecessary abstractions, framework layers, services, registries, factories, or directory structures.
 - Prefer small functions and straightforward data models over complex object hierarchies.
 - Add structure only when it is clearly needed by existing behavior or tests.
+- Make expansions easy to maintain: new persona fields should fit the existing
+  persona models and factory flow, and new questionnaires should fit the shared
+  questionnaire base models.
 
 ## Dependencies and Tooling
 
@@ -47,11 +57,12 @@ The standard workflow is:
 2. Let the user select or define demographic inputs.
 3. Render a persona prompt from those inputs.
 4. Ask the LLM to assume the persona.
-5. Load one or more questionnaire definitions.
-6. Ask questions one by one as MCQs.
-7. Retain prior question and answer context during the questionnaire chat.
-8. Capture the model answer, structured output if available, logprobs if available, and relevant metadata.
-9. Append records to JSONL for later analysis.
+5. Optionally expand base personas into protocol conditions and iterations for parameter-comparison designs.
+6. Load one or more questionnaire definitions.
+7. Ask questions one by one using each item's response format.
+8. Retain prior question and answer context during the questionnaire chat when the questionnaire requests it.
+9. Capture the model answer, structured output if available, logprobs if available, and relevant metadata.
+10. Append records to JSONL for later analysis.
 
 ## Questionnaire Format
 
@@ -97,16 +108,19 @@ When coding a questionnaire:
 - Each line should represent a clear analysis unit, preferably one answered item with its questionnaire, prompt messages, typed answer, raw response, structured response, logprobs if available, status, errors, and run/session metadata.
 - Keep the JSONL schema stable and validate records with Pydantic before writing.
 - Do not duplicate full questionnaire definitions into every result line. Store questionnaire definitions in code under `src/llm_psych_scales/questionnaires/`; store result lines with stable questionnaire, item, scale, model, prompt, persona, provider, and response identifiers or metadata needed for later analysis.
-- Store runtime data under `experiments/{experiment_id}/sessions/{session_id}/runs/{run_id}/`.
+- Current runtime data is stored under `experiments/{experiment_id}/run-{questionnaire}-{model}-{timestamp}/`.
+- Experiment roots can also contain `personas.jsonl`, `metadata.jsonl`, and, for protocol runs, `protocol.json`, `base_personas.jsonl`, and `protocol_assignments.jsonl`.
 - Experiment IDs must be exactly three lowercase letter-or-digit items separated by hyphens, such as `pilot-study-one`; reject spaces, underscores, dots, path separators, and other symbols.
-- Session IDs must be `session-[uuid]`; run IDs must be `run-[uuid]`.
-- Run directories should contain only JSONL files, currently `responses.jsonl`.
+- Session IDs must be `session-[uuid]`.
+- Run IDs currently use the directory form `run-{questionnaire}-{model}-{timestamp}` unless explicitly supplied in lower-level runner calls.
+- Run directories currently contain `run.jsonl`, `scale.json`, and `responses/{subject_id}.jsonl`.
 
 ## Response and Session Data
 
 Runtime response data should use the Pydantic models in `src/llm_psych_scales/responses/base/`.
 
-- Use `SessionRecord` for run-level metadata: `session-[uuid]` session IDs, `run-[uuid]` run IDs, questionnaire ID and version, persona snapshot, provider snapshot, timestamps, status, and metadata.
+- Use `RunRecord` for run-level metadata: experiment and session IDs, run ID, subject IDs, questionnaire ID and version, provider snapshot, timestamps, status, output paths, and metadata.
+- Use `SessionRecord` when session-level metadata needs to be persisted separately.
 - Use `ItemResponseRecord` for item-level JSONL analysis units: stable questionnaire and item IDs, item order/text, response format type, prompt messages, parsed answer, raw response, structured response, logprobs, status, errors, and metadata.
 - Use typed answer values instead of ad hoc nullable fields: `LikertAnswerValue`, `NumericAnswerValue`, `SingleChoiceAnswerValue`, `MultipleChoiceAnswerValue`, and `TextAnswerValue`.
 - Keep provider-specific or experiment-specific details inside explicit `metadata` fields unless they become stable first-class fields.
