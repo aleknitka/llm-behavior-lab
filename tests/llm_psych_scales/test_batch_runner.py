@@ -5,9 +5,10 @@ from loguru import logger
 
 from llm_psych_scales.models import LlmQuestionResult, ModelSettings
 from llm_psych_scales.personas.factory import PersonaGenerationConfig, RequestedDemographicField
+from llm_psych_scales.protocols import ExperimentProtocol
 from llm_psych_scales.questionnaires.base.scale import Questionnaire
 from llm_psych_scales.questionnaires.bfi10 import BFI_10
-from llm_psych_scales.runner import run_persona_questionnaire_batch
+from llm_psych_scales.runner import run_persona_questionnaire_batch, run_protocol_experiment
 
 
 class FakeBatchClient:
@@ -212,3 +213,78 @@ def test_batch_runner_uses_persona_generation_config(tmp_path) -> None:
     assert {persona.features.affluence_level for persona in result.personas.personas} == {
         "middle"
     }
+
+
+def test_protocol_runner_writes_protocol_artifacts_and_metadata(tmp_path) -> None:
+    settings = ModelSettings(
+        model="openai/gpt-oss-20b",
+        provider_base_url="http://localhost:1234/v1",
+        temperature=0.2,
+        timeout_seconds=60.0,
+        seed=99,
+    )
+    protocol = ExperimentProtocol.model_validate(
+        {
+            "version": "1.0",
+            "name": "gender-affluence-factorial",
+            "base_persona_count": 1,
+            "seed": 123,
+            "iterations": 2,
+            "requested_fields": ["age", "country", "gender", "affluence_level"],
+            "base_persona_config": {"field_probabilities": {"country": {"PL": 1.0}}},
+            "factors": [
+                {
+                    "name": "gender",
+                    "field": "gender",
+                    "levels": [
+                        {"id": "female", "value": "female"},
+                        {"id": "male", "value": "male"},
+                    ],
+                },
+                {
+                    "name": "affluence",
+                    "field": "affluence_level",
+                    "levels": [
+                        {"id": "low", "value": "low"},
+                        {"id": "middle", "value": "middle"},
+                    ],
+                },
+            ],
+        }
+    )
+
+    result = run_protocol_experiment(
+        protocol=protocol,
+        questionnaire=BFI_10,
+        settings=settings,
+        client=FakeBatchClient(),
+        project_root=tmp_path,
+        experiment_id="proto-study-one",
+    )
+
+    experiment_root = tmp_path / "experiments" / "proto-study-one"
+    run_root = experiment_root / result.runs[0].run_id
+    assert (experiment_root / "protocol.json").exists()
+    assert (experiment_root / "base_personas.jsonl").exists()
+    assert (experiment_root / "personas.jsonl").exists()
+    assert (experiment_root / "protocol_assignments.jsonl").exists()
+    assert len(list((run_root / "responses").glob("*.jsonl"))) == 1 * 2 * 2 * 2
+
+    assignment_rows = [
+        json.loads(line)
+        for line in (experiment_root / "protocol_assignments.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len(assignment_rows) == 8
+    response_path = sorted((run_root / "responses").glob("*.jsonl"))[0]
+    response_rows = [json.loads(line) for line in response_path.read_text().splitlines()]
+    assignment = next(
+        row for row in assignment_rows if row["subject_id"] == response_rows[0]["subject_id"]
+    )
+    assert response_rows[0]["metadata"]["protocol_name"] == "gender-affluence-factorial"
+    assert response_rows[0]["metadata"]["base_subject_id"] == assignment["base_subject_id"]
+    assert response_rows[0]["metadata"]["condition_id"] == assignment["condition_id"]
+    assert response_rows[0]["metadata"]["iteration_index"] == assignment["iteration_index"]
+    assert response_rows[0]["metadata"]["factor_values"]["gender"] in {"female", "male"}
+    assert "persona_snapshot" not in response_rows[0]

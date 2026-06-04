@@ -179,6 +179,88 @@ Weighted config currently supports enum-backed persona fields such as `country`,
 `gender`, `education_level`, `employment_status`, `affluence_level`, `urbanicity`,
 and `family_status`. Invalid enum values or non-positive probabilities are rejected.
 
+## Protocol Experiments
+
+Use `--protocol` for paired or factorial experiments where the same generated base
+persona is cloned across manipulated factor levels and repeated iterations.
+
+Example `protocol.json`:
+
+```json
+{
+  "version": "1.0",
+  "name": "gender-affluence-factorial",
+  "design": "paired_factorial",
+  "base_persona_count": 20,
+  "seed": 123,
+  "iterations": 3,
+  "requested_fields": [
+    "age",
+    "country",
+    "education_level",
+    "employment_status",
+    "gender",
+    "affluence_level"
+  ],
+  "base_persona_config": {
+    "field_probabilities": {
+      "country": {
+        "PL": 1.0
+      }
+    }
+  },
+  "factors": [
+    {
+      "name": "gender",
+      "field": "gender",
+      "levels": [
+        { "id": "female", "value": "female" },
+        { "id": "male", "value": "male" }
+      ]
+    },
+    {
+      "name": "affluence",
+      "field": "affluence_level",
+      "levels": [
+        { "id": "low", "value": "low" },
+        { "id": "middle", "value": "middle" },
+        { "id": "very_high", "value": "very_high" }
+      ]
+    }
+  ]
+}
+```
+
+Run with:
+
+```bash
+uv run llm-psych-scales \
+  --experiment-id bfi10-protocol-test \
+  --protocol protocol.json \
+  --model openai/gpt-oss-20b \
+  --base-url http://localhost:1234/v1 \
+  --api-key lm-studio
+```
+
+For each generated base persona, the runner creates every factor-level cell and every
+iteration. In the example above, each base persona expands to `2 x 3 x 3 = 18`
+runtime subjects. Persona features stay identical within the same base/cell across
+iterations; only deterministic item call seeds vary.
+
+Protocol mode writes additional experiment-level files:
+
+```text
+experiments/{experiment_id}/
+  protocol.json
+  base_personas.jsonl
+  personas.jsonl
+  protocol_assignments.jsonl
+```
+
+`protocol_assignments.jsonl` maps each expanded subject to its base subject,
+condition ID, iteration index, factor values, and factor level IDs. Response metadata
+contains those assignment identifiers without duplicating the full persona snapshot.
+
 ## Questionnaire Definitions
 
 Questionnaires are coded as Python module-level constants under

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,9 @@ _EXPERIMENT_ID_PATTERN = re.compile(r"^[a-z0-9]+-[a-z0-9]+-[a-z0-9]+$")
 class ExperimentPaths:
     experiment_root: Path
     personas_path: Path
+    base_personas_path: Path
+    protocol_path: Path
+    protocol_assignments_path: Path
     metadata_path: Path
     run_root: Path
     run_path: Path
@@ -90,6 +94,9 @@ def resolve_experiment_paths(
     return ExperimentPaths(
         experiment_root=experiment_root,
         personas_path=experiment_root / "personas.jsonl",
+        base_personas_path=experiment_root / "base_personas.jsonl",
+        protocol_path=experiment_root / "protocol.json",
+        protocol_assignments_path=experiment_root / "protocol_assignments.jsonl",
         metadata_path=experiment_root / "metadata.jsonl",
         run_root=run_root,
         run_path=run_root / "run.jsonl",
@@ -119,4 +126,21 @@ def write_persona_batch_jsonl(project_root: Path, batch: PersonaBatch) -> Path:
         file.write(
             batch.model_dump_json(include={"metadata": True, "personas": True}) + "\n"
         )
+    return path
+
+
+def write_persona_batch_jsonl_at_path(path: Path, batch: PersonaBatch) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        file.write(
+            batch.model_dump_json(include={"metadata": True, "personas": True}) + "\n"
+        )
+    return path
+
+
+def write_jsonl_records(path: Path, records: Sequence[BaseModel]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        for record in records:
+            file.write(record.model_dump_json() + "\n")
     return path

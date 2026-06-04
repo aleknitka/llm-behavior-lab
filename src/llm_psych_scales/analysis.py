@@ -33,6 +33,10 @@ TABLE_COLUMNS = [
     "error",
     "logprobs_available",
     "experiment_id",
+    "protocol_name",
+    "base_subject_id",
+    "condition_id",
+    "iteration_index",
 ]
 
 
@@ -71,7 +75,7 @@ def _load_jsonl_file(path: Path) -> list[ItemResponseRecord]:
 
 def _row_from_record(record: ItemResponseRecord) -> dict[str, Any]:
     answer_value, answer_label = _answer_columns(record)
-    return {
+    row = {
         "subject_id": record.subject_id,
         "session_id": record.session_id,
         "run_id": record.run_id,
@@ -90,6 +94,16 @@ def _row_from_record(record: ItemResponseRecord) -> dict[str, Any]:
         "logprobs_available": record.logprobs is not None,
         "experiment_id": record.metadata.get("experiment_id"),
     }
+    if "protocol_name" in record.metadata:
+        row["protocol_name"] = record.metadata.get("protocol_name")
+        row["base_subject_id"] = record.metadata.get("base_subject_id")
+        row["condition_id"] = record.metadata.get("condition_id")
+        row["iteration_index"] = record.metadata.get("iteration_index")
+    factor_values = record.metadata.get("factor_values")
+    if isinstance(factor_values, dict):
+        for field, value in factor_values.items():
+            row[f"factor_{field}"] = value
+    return row
 
 
 def _answer_columns(record: ItemResponseRecord) -> tuple[Any, str | None]:

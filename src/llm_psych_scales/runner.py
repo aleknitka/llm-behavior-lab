@@ -21,6 +21,11 @@ from llm_psych_scales.personas.factory import (
     RequestedDemographicField,
 )
 from llm_psych_scales.prompting import render_persona_intro
+from llm_psych_scales.protocols import (
+    ExperimentProtocol,
+    ProtocolAssignment,
+    expand_protocol_personas,
+)
 from llm_psych_scales.questionnaires.base.response_formats import (
     LikertFormat,
     MultipleChoiceFormat,
@@ -51,7 +56,9 @@ from llm_psych_scales.storage import (
     resolve_experiment_paths,
     slugify_model_name,
     validate_experiment_id,
+    write_jsonl_records,
     write_persona_batch_jsonl,
+    write_persona_batch_jsonl_at_path,
 )
 
 Message = dict[str, str]
@@ -177,12 +184,15 @@ def _record_from_result(
     messages: Sequence[Message],
     result: LlmQuestionResult,
     seed: int | None = None,
+    metadata_extra: dict[str, object] | None = None,
 ) -> ItemResponseRecord:
     answer = _answer_from_result(item, result)
     status = ResponseStatus.FAILED if result.error else ResponseStatus.COMPLETED
     if result.error is None and answer is None:
         status = ResponseStatus.INVALID
     metadata: dict[str, object] = {"experiment_id": experiment_id}
+    if metadata_extra:
+        metadata.update(metadata_extra)
     if seed is not None:
         metadata["seed"] = seed
 
@@ -306,6 +316,7 @@ def run_questionnaire(
     session_id: str | None = None,
     run_id: str | None = None,
     write_session_record: bool = True,
+    response_metadata: dict[str, object] | None = None,
 ) -> list[ItemResponseRecord]:
     resolved_experiment_id = (
         validate_experiment_id(experiment_id) if experiment_id else generate_experiment_id()
@@ -368,6 +379,7 @@ def run_questionnaire(
             messages,
             result,
             call_seed,
+            response_metadata,
         )
         append_jsonl_record(paths.response_path_for_subject(persona.persona_id), record)
         records.append(record)
@@ -555,6 +567,145 @@ def run_persona_questionnaire_batch(
     )
 
 
+def run_protocol_experiment(
+    protocol: ExperimentProtocol,
+    questionnaire: Questionnaire,
+    settings: ModelSettings,
+    client: SyncLlmClient,
+    project_root: Path,
+    experiment_id: str | None = None,
+) -> BatchRunResult:
+    resolved_experiment_id = (
+        validate_experiment_id(experiment_id)
+        if experiment_id
+        else generate_experiment_id(protocol.seed)
+    )
+    session_id = normalize_prefixed_uuid("session-")
+    run_settings = settings.model_copy(
+        update={"seed": settings.seed if settings.seed is not None else protocol.seed}
+    )
+    logger.info(
+        "Starting protocol experiment experiment_id={experiment_id} "
+        "protocol={protocol_name} base_personas={base_count} iterations={iterations}",
+        experiment_id=resolved_experiment_id,
+        protocol_name=protocol.name,
+        base_count=protocol.base_persona_count,
+        iterations=protocol.iterations,
+    )
+    expansion = expand_protocol_personas(protocol, resolved_experiment_id)
+
+    started_at = datetime.now(UTC)
+    run_id = _next_run_id(
+        project_root=project_root,
+        experiment_id=resolved_experiment_id,
+        questionnaire=questionnaire,
+        settings=run_settings,
+        started_at=started_at,
+    )
+    paths = resolve_experiment_paths(
+        project_root=project_root,
+        experiment_id=resolved_experiment_id,
+        run_id=run_id,
+    )
+    paths.protocol_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.protocol_path.write_text(
+        protocol.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    write_persona_batch_jsonl_at_path(paths.base_personas_path, expansion.base_personas)
+    write_persona_batch_jsonl_at_path(paths.personas_path, expansion.personas)
+    write_jsonl_records(paths.protocol_assignments_path, expansion.assignments)
+
+    assignments_by_subject = {
+        assignment.subject_id: assignment for assignment in expansion.assignments
+    }
+    all_records: list[ItemResponseRecord] = []
+    statuses: list[ResponseStatus] = []
+    for index, generated_persona in enumerate(expansion.personas.personas, start=1):
+        assignment = assignments_by_subject[str(generated_persona.subject_id)]
+        logger.info(
+            "Starting protocol subject {index}/{subject_count} subject_id={subject_id} "
+            "condition={condition_id} iteration={iteration_index}",
+            index=index,
+            subject_count=len(expansion.personas.personas),
+            subject_id=generated_persona.subject_id,
+            condition_id=assignment.condition_id,
+            iteration_index=assignment.iteration_index,
+        )
+        records = run_questionnaire(
+            persona=_runtime_persona_from_generated(generated_persona),
+            questionnaire=questionnaire,
+            settings=run_settings,
+            client=client,
+            project_root=project_root,
+            experiment_id=resolved_experiment_id,
+            session_id=session_id,
+            run_id=run_id,
+            write_session_record=False,
+            response_metadata=_assignment_metadata(protocol, assignment),
+        )
+        all_records.extend(records)
+        statuses.append(_response_status(records))
+
+    batch_status = ResponseStatus.COMPLETED
+    if ResponseStatus.FAILED in statuses:
+        batch_status = ResponseStatus.FAILED
+    elif ResponseStatus.INVALID in statuses:
+        batch_status = ResponseStatus.INVALID
+
+    completed_at = datetime.now(UTC)
+    run_record = _run_record(
+        resolved_experiment_id,
+        session_id,
+        run_id,
+        [str(persona.subject_id) for persona in expansion.personas.personas],
+        len(expansion.personas.personas),
+        questionnaire,
+        run_settings,
+        started_at,
+        completed_at,
+        all_records,
+        output_paths={
+            "run": str(paths.run_path),
+            "responses": str(paths.responses_root),
+            "scale": str(paths.scale_path),
+            "protocol": str(paths.protocol_path),
+            "base_personas": str(paths.base_personas_path),
+            "assignments": str(paths.protocol_assignments_path),
+        },
+    )
+    append_jsonl_record(paths.run_path, run_record)
+    append_jsonl_record(paths.metadata_path, run_record)
+    _write_scale_copy(paths.scale_path, questionnaire)
+    logger.info(
+        "Completed protocol experiment experiment_id={experiment_id} "
+        "status={status} subjects={subject_count}",
+        experiment_id=resolved_experiment_id,
+        status=batch_status,
+        subject_count=len(expansion.personas.personas),
+    )
+    return BatchRunResult(
+        experiment_id=resolved_experiment_id,
+        session_id=session_id,
+        personas=expansion.personas,
+        runs=[run_record],
+    )
+
+
+def _assignment_metadata(
+    protocol: ExperimentProtocol,
+    assignment: ProtocolAssignment,
+) -> dict[str, object]:
+    return {
+        "protocol_name": protocol.name,
+        "base_subject_id": assignment.base_subject_id,
+        "condition_id": assignment.condition_id,
+        "iteration_index": assignment.iteration_index,
+        "factor_values": assignment.factor_values,
+        "factor_level_ids": assignment.factor_level_ids,
+    }
+
+
 async def run_questionnaire_async(
     persona: Persona,
     questionnaire: Questionnaire,
@@ -565,6 +716,7 @@ async def run_questionnaire_async(
     session_id: str | None = None,
     run_id: str | None = None,
     write_session_record: bool = True,
+    response_metadata: dict[str, object] | None = None,
 ) -> list[ItemResponseRecord]:
     resolved_experiment_id = (
         validate_experiment_id(experiment_id) if experiment_id else generate_experiment_id()
@@ -627,6 +779,7 @@ async def run_questionnaire_async(
             messages,
             result,
             call_seed,
+            response_metadata,
         )
         append_jsonl_record(paths.response_path_for_subject(persona.persona_id), record)
         records.append(record)

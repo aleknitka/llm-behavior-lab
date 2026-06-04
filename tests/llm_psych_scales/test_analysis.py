@@ -165,3 +165,48 @@ def test_write_response_table_csv_writes_stable_columns(tmp_path) -> None:
         csv_rows = list(csv.DictReader(file))
     assert csv_rows[0]["subject_id"] == "subject-1"
     assert csv_rows[0]["answer_value"] == "1"
+
+
+def test_load_response_table_includes_protocol_columns(tmp_path) -> None:
+    responses_root = tmp_path / "run-bfi10-model-20260603120000" / "responses"
+    _write_response(
+        responses_root / "subject-1.jsonl",
+        ItemResponseRecord(
+            subject_id="subject-1",
+            session_id="session-1",
+            run_id="run-bfi10-model-20260603120000",
+            questionnaire_id="bfi_10",
+            questionnaire_version="1.0",
+            item_id="bfi10_01_reserved",
+            item_order=1,
+            item_text="Question",
+            response_format_type="likert",
+            messages=[],
+            answer=LikertAnswerValue(value=1, label="Strongly agree"),
+            raw_response="1",
+            structured_response=None,
+            logprobs=None,
+            status=ResponseStatus.COMPLETED,
+            error=None,
+            metadata={
+                "experiment_id": "proto-study-one",
+                "protocol_name": "gender-affluence-factorial",
+                "base_subject_id": "base-1",
+                "condition_id": "gender-female__affluence-low",
+                "iteration_index": 2,
+                "factor_values": {
+                    "gender": "female",
+                    "affluence_level": "low",
+                },
+            },
+        ),
+    )
+
+    rows = load_response_table(responses_root)
+
+    assert rows[0]["protocol_name"] == "gender-affluence-factorial"
+    assert rows[0]["base_subject_id"] == "base-1"
+    assert rows[0]["condition_id"] == "gender-female__affluence-low"
+    assert rows[0]["iteration_index"] == 2
+    assert rows[0]["factor_gender"] == "female"
+    assert rows[0]["factor_affluence_level"] == "low"

@@ -19,8 +19,9 @@ from llm_psych_scales.config import (
 )
 from llm_psych_scales.models import ModelSettings, ProviderCapabilities
 from llm_psych_scales.personas.factory import PersonaGenerationConfig
+from llm_psych_scales.protocols import ExperimentProtocol
 from llm_psych_scales.questionnaires.bfi10 import BFI_10
-from llm_psych_scales.runner import run_persona_questionnaire_batch
+from llm_psych_scales.runner import run_persona_questionnaire_batch, run_protocol_experiment
 
 LOG_LEVELS = ("TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL")
 
@@ -60,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-id", default=None)
     parser.add_argument("--persona-count", type=int, default=100)
     parser.add_argument("--persona-config", type=Path, default=None)
+    parser.add_argument("--protocol", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--log-level", choices=LOG_LEVELS, default="INFO")
     parser.add_argument(
@@ -110,6 +112,10 @@ def load_persona_config(path: Path | None) -> PersonaGenerationConfig:
     return PersonaGenerationConfig.model_validate_json(path.read_text(encoding="utf-8"))
 
 
+def load_protocol(path: Path) -> ExperimentProtocol:
+    return ExperimentProtocol.model_validate_json(path.read_text(encoding="utf-8"))
+
+
 def resolve_provider_config(
     cli_base_url: str | None,
     cli_api_key: str | None,
@@ -136,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(args.log_level)
     env_values = load_env_file(args.project_root)
     persona_config = load_persona_config(args.persona_config)
+    protocol = load_protocol(args.protocol) if args.protocol is not None else None
     provider_config = resolve_provider_config(
         cli_base_url=args.base_url,
         cli_api_key=args.api_key,
@@ -160,16 +167,26 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     client = OpenAiChatClient(api_key=provider_config.api_key, base_url=provider_config.base_url)
-    result = run_persona_questionnaire_batch(
-        questionnaire=BFI_10,
-        settings=settings,
-        client=client,
-        project_root=args.project_root,
-        experiment_id=args.experiment_id,
-        persona_count=args.persona_count,
-        seed=args.seed,
-        persona_config=persona_config,
-    )
+    if protocol is not None:
+        result = run_protocol_experiment(
+            protocol=protocol,
+            questionnaire=BFI_10,
+            settings=settings,
+            client=client,
+            project_root=args.project_root,
+            experiment_id=args.experiment_id,
+        )
+    else:
+        result = run_persona_questionnaire_batch(
+            questionnaire=BFI_10,
+            settings=settings,
+            client=client,
+            project_root=args.project_root,
+            experiment_id=args.experiment_id,
+            persona_count=args.persona_count,
+            seed=args.seed,
+            persona_config=persona_config,
+        )
 
     failed = sum(run.error_count for run in result.runs)
     print(
