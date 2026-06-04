@@ -1,7 +1,11 @@
 # llm-psych-scales
 
+![Developed with Codex](https://img.shields.io/badge/developed%20with-Codex-111827?style=for-the-badge)
+
 Application for running LLM persona-based psychological questionnaire batches and saving
 JSONL data for later analysis.
+
+This project was developed with OpenAI Codex.
 
 The current default workflow is:
 
