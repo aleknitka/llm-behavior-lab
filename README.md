@@ -417,6 +417,89 @@ write_response_table_csv(rows, Path("analysis/bfi10-responses.csv"))
 `load_response_table` accepts a single subject JSONL file, a `responses/` directory,
 or a run directory containing `responses/`.
 
+## Pairwise Preference Tests
+
+Use `llm_psych_scales.preference_tests` for simple paired preference experiments.
+Each trial presents two blinded stimulus versions as `A` and `B`, asks the persona
+to choose one, and stores one JSONL record per persona-trial.
+
+```python
+from pathlib import Path
+
+from llm_psych_scales.client import OpenAiChatClient
+from llm_psych_scales.models import ModelSettings, ProviderCapabilities
+from llm_psych_scales.preference_tests import (
+    PairwisePreferenceExperiment,
+    Stimulus,
+    generate_pairwise_trials,
+    run_pairwise_preference_batch,
+)
+
+stimulus_ids = ["direct", "social", "calm"]
+experiment = PairwisePreferenceExperiment(
+    id="landing-copy-test",
+    name="Landing copy test",
+    version="1.0",
+    instruction="Choose the message you would be more likely to click.",
+    stimuli=[
+        Stimulus(id="direct", text="Start saving time today."),
+        Stimulus(id="social", text="Join 10,000 teams saving time."),
+        Stimulus(id="calm", text="A quieter way to manage your work."),
+    ],
+    trials=generate_pairwise_trials(stimulus_ids),
+)
+
+settings = ModelSettings(
+    model="openai/gpt-oss-20b",
+    provider_base_url="http://localhost:1234/v1",
+    temperature=0.0,
+    timeout_seconds=60.0,
+    seed=123,
+    capabilities=ProviderCapabilities(supports_logprobs=True),
+)
+client = OpenAiChatClient(api_key="lm-studio", base_url=settings.provider_base_url)
+
+result = run_pairwise_preference_batch(
+    experiment=experiment,
+    settings=settings,
+    client=client,
+    project_root=Path("."),
+    experiment_id="pref-study-one",
+    persona_count=20,
+    seed=123,
+)
+print(result.experiment_id, result.runs[0].run_id)
+```
+
+Pairwise preference runs write `experiment.json`, `run.jsonl`, and per-subject
+JSONL files under `responses/`. The module also includes helpers to flatten
+records and summarize stimulus win counts.
+
+The runner randomizes which stimulus is displayed as `A` or `B` for each
+persona-trial using a deterministic hash of the run seed, persona ID, and trial ID.
+This reduces fixed-position bias while preserving reproducibility, and each record
+stores `displayed_stimulus_ids` so later analysis can audit or model order effects.
+The current implementation does not enforce exact 50/50 counterbalancing across
+personas; larger samples should approach balance through randomization, while small
+studies that require strict counterbalancing should add explicit allocation logic.
+
+The methodology follows standard paired-comparison / two-alternative forced-choice
+practice:
+
+- Thurstone introduced paired comparative judgment as a way to scale qualitative
+  judgments and preferences: <https://brocku.ca/MeadProject/Thurstone/Thurstone_1927f.html>
+- Paired-comparison data can be summarized into preference proportions and later
+  modeled with Thurstone or Bradley-Terry approaches:
+  <https://www.mathematicalpsychology.com/Paired_Comparisons>
+- Brown and Peterson review paired-comparison reliability, consistency, and scaling:
+  <https://research.fs.usda.gov/treesearch/31863>
+- ISO 5495 describes the paired comparison test as a forced-choice test between
+  two alternatives, also known as 2-AFC:
+  <https://www.iso.org/standard/31621.html>
+- Modern Bradley-Terry extensions can handle ties, order effects, subject
+  predictors, and hierarchical models, which are useful future analysis directions:
+  <https://link.springer.com/article/10.3758/s13428-021-01714-2>
+
 ## Development
 
 Run the project checks before merging changes:

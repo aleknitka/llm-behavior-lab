@@ -113,7 +113,7 @@ class PersonaFactoryRequest(BaseModel):
 
 class PersonaFactory:
     def create_demographics_batch(self, request: PersonaFactoryRequest) -> PersonaBatch:
-        rng = random.Random(request.seed)
+        rng = random.Random(request.seed)  # nosec B311 - deterministic sampling only.
         experiment_id = request.experiment_id or generate_experiment_id(request.seed)
         personas = [
             GeneratedPersona(

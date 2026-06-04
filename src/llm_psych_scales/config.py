@@ -1,7 +1,7 @@
 from pathlib import Path
 
 DEFAULT_API_BASE_URL = "http://localhost:1234/v1"
-DEFAULT_API_KEY = "lm-studio"
+DEFAULT_API_KEY = "lm-studio"  # pragma: allowlist secret
 DEFAULT_MODEL = "openai/gpt-oss-20b"
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TIMEOUT_SECONDS = 60.0

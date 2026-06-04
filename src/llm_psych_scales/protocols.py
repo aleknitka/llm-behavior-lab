@@ -167,7 +167,7 @@ def _create_base_personas(
             )
         )
 
-    rng = random.Random(protocol.seed)
+    rng = random.Random(protocol.seed)  # nosec B311 - deterministic sampling only.
     personas = [
         GeneratedPersona(
             subject_id=UUID(int=rng.getrandbits(128), version=4),

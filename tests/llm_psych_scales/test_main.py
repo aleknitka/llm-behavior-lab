@@ -53,7 +53,9 @@ def test_parser_rejects_old_output_argument() -> None:
 def test_load_env_file_reads_simple_key_value_pairs(tmp_path) -> None:
     env_path = tmp_path / ".env"
     env_path.write_text(
-        "# local provider\nOPENAI_BASE_URL=http://localhost:9999/v1\nOPENAI_API_KEY='secret'\n",
+        "# local provider\n"
+        "OPENAI_BASE_URL=http://localhost:9999/v1\n"
+        "OPENAI_API_KEY='secret'\n",  # pragma: allowlist secret
         encoding="utf-8",
     )
 
@@ -61,7 +63,7 @@ def test_load_env_file_reads_simple_key_value_pairs(tmp_path) -> None:
 
     assert values == {
         "OPENAI_BASE_URL": "http://localhost:9999/v1",
-        "OPENAI_API_KEY": "secret",
+        "OPENAI_API_KEY": "secret",  # pragma: allowlist secret
     }
 
 
@@ -125,19 +127,19 @@ def test_load_protocol_reads_valid_protocol_json(tmp_path) -> None:
 def test_resolve_provider_config_prefers_cli_then_environment_then_dotenv(monkeypatch) -> None:
     env_values = {
         "OPENAI_BASE_URL": "http://dotenv:1234/v1",
-        "OPENAI_API_KEY": "dotenv-key",
+        "OPENAI_API_KEY": "dotenv-key",  # pragma: allowlist secret
     }
     monkeypatch.setenv("OPENAI_BASE_URL", "http://env:1234/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")  # pragma: allowlist secret
 
     config = resolve_provider_config(
         cli_base_url="http://cli:1234/v1",
-        cli_api_key="cli-key",
+        cli_api_key="cli-key",  # pragma: allowlist secret
         env_values=env_values,
     )
 
     assert config.base_url == "http://cli:1234/v1"
-    assert config.api_key == "cli-key"
+    assert config.api_key == "cli-key"  # pragma: allowlist secret
 
 
 def test_resolve_provider_config_uses_dotenv_when_cli_and_environment_absent(monkeypatch) -> None:
@@ -149,9 +151,9 @@ def test_resolve_provider_config_uses_dotenv_when_cli_and_environment_absent(mon
         cli_api_key=None,
         env_values={
             "OPENAI_BASE_URL": "http://dotenv:1234/v1",
-            "OPENAI_API_KEY": "dotenv-key",
+            "OPENAI_API_KEY": "dotenv-key",  # pragma: allowlist secret
         },
     )
 
     assert config.base_url == "http://dotenv:1234/v1"
-    assert config.api_key == "dotenv-key"
+    assert config.api_key == "dotenv-key"  # pragma: allowlist secret
