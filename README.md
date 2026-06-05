@@ -363,6 +363,37 @@ EXAMPLE_SCALE = Questionnaire(
 Keep `Item.id`, `Section.id`, `Scale.id`, and `ScoringModel.id` stable because run
 records and analysis code may refer to them later.
 
+Local source papers used while coding new instruments can be kept in `.local_sources/`.
+Keep that directory local and out of commits; do not commit source PDFs unless a commit
+explicitly needs and names them.
+
+### Consumer Involvement Scale
+
+The consumer involvement questionnaire from Broderick and Mueller (1999) requires a
+product or service category before it can be run. Build a target-specific copy and pass
+that questionnaire to the runner:
+
+Source DOI: <https://doi.org/10.1080/10696679.1999.11501855>
+
+```python
+from llm_psych_scales.questionnaires.consumer_involvement import (
+    build_consumer_involvement_questionnaire,
+)
+
+questionnaire = build_consumer_involvement_questionnaire("meal delivery services")
+```
+
+The builder fills the source item blanks with the supplied target phrase, preserves the
+source five-point agreement response format, and stores the target plus source DOI in
+questionnaire metadata. The original empirical application was food shopping, so using
+the scale for another product or service category should be treated as part of the study
+design.
+
+Target-dependent questionnaires should follow this pattern: keep a template constant
+for inspection, expose a small builder that validates the target input, and store the
+resolved product or service category in questionnaire metadata so downstream analysis
+can tell which stimulus domain was used.
+
 ## Running From Python
 
 ```python
