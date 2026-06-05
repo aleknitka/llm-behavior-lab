@@ -2,15 +2,16 @@
 
 ![Developed with Codex](https://img.shields.io/badge/developed%20with-Codex-111827?style=for-the-badge)
 
-Application for running LLM persona-based psychological questionnaire batches and saving
-JSONL data for later analysis. The project is designed to support multiple
-questionnaires and extensible persona feature maps, so new instruments and new
-persona dimensions can be added without changing the core runner.
+Application for running LLM persona-based psychological questionnaire sessions and
+saving JSONL data for later analysis. The project is designed to support multiple
+standardized questionnaires, extensible persona feature maps, protocol-based
+persona manipulations, and simple pairwise preference experiments.
 
 This project was developed with OpenAI Codex.
 
-The current CLI workflow runs BFI-10 by default, while the questionnaire model and
-runner accept standardized questionnaire definitions:
+The current CLI workflow runs BFI-10 by default. The shared questionnaire models
+and runner accept standardized questionnaire definitions, so additional coded
+instruments can be used from Python and exposed through the CLI as needed.
 
 1. Generate a batch of demographic personas.
 2. Optionally expand those personas through a paired or factorial protocol that
@@ -20,9 +21,21 @@ runner accept standardized questionnaire definitions:
 4. Save one experiment directory containing the persona batch, run metadata, scale copy,
    and one response file per generated subject.
 
+Current implemented surfaces include:
+
+- Demographic persona generation with weighted enum sampling.
+- BFI-10 batch runs through the CLI.
+- Questionnaire base models for sections, items, response formats, scales, and
+  scoring-model metadata.
+- Runtime response models for run records and item-level JSONL records.
+- Paired-factorial protocol expansion for manipulated persona fields.
+- Pairwise preference-test helpers for blinded `A`/`B` stimulus comparisons.
+
 ## Quick Start
 
-Install dependencies and run the default BFI-10 LM Studio batch:
+Install dependencies and run the default BFI-10 LM Studio batch. This assumes a
+local OpenAI-compatible provider is already serving chat completions at
+`http://localhost:1234/v1`.
 
 ```bash
 uv sync
@@ -49,6 +62,9 @@ If `--experiment-id` is omitted, a valid three-part experiment ID is generated.
 Experiment IDs must match `item-item-item`, using only lowercase letters and digits
 inside each item, for example `pilot-study-one`.
 
+The CLI currently exposes BFI-10. Use the Python runner APIs for other coded
+questionnaires until additional CLI selection is added.
+
 ## Provider Configuration
 
 The CLI accepts provider settings directly:
@@ -73,6 +89,9 @@ Resolution order is CLI argument, process environment, `.env`, then built-in def
 Use `--log-level DEBUG` to see detailed progress from loguru. If logprobs are requested
 but the provider rejects them, the client logs a warning, retries the call without
 logprobs, and stores `logprobs` as `null`.
+
+Provider capability flags are stored in run metadata so later analysis can tell
+whether logprobs or structured-output support was requested for a given run.
 
 ## Reproducibility
 
@@ -283,8 +302,13 @@ contains those assignment identifiers without duplicating the full persona snaps
 Questionnaires are coded as Python module-level constants under
 `src/llm_psych_scales/questionnaires/`. Use
 `llm_psych_scales.questionnaires.base.scale.Questionnaire` as the source-of-truth
-object for new instruments. BFI-10 is the first coded questionnaire, not the intended
-limit of the project.
+object for new instruments.
+
+Current coded questionnaires include:
+
+- BFI-10
+- Consumer Involvement Scale, built for a supplied product or service target
+- [Purchase Decision-Making Inventory (PDMI)](src/llm_psych_scales/questionnaires/pdmi/README.md)
 
 The base structure separates questionnaire definitions from runtime output:
 
@@ -533,10 +557,18 @@ practice:
 
 ## Development
 
-Run the project checks before merging changes:
+Application code lives under `src/` and tests live under `tests/`. Dependencies are
+managed with `uv`.
+
+Run the standard checks before considering implementation work complete:
 
 ```bash
-uv run pytest -q
 uv run ruff check .
 uv run ty check
+uv run pytest
 ```
+
+Questionnaire definitions should be validated at import or load time through the
+Pydantic base models in `llm_psych_scales.questionnaires.base`. Runtime output
+should use the response models in `llm_psych_scales.responses.base` and remain
+stable enough for downstream analysis.

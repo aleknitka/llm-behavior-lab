@@ -75,8 +75,7 @@ class BatchRunResult:
 def _allowed_answer_ids(response_format: ResponseFormat) -> list[str]:
     if isinstance(response_format, LikertFormat):
         return [
-            str(value)
-            for value in range(response_format.min_value, response_format.max_value + 1)
+            str(value) for value in range(response_format.min_value, response_format.max_value + 1)
         ]
     if isinstance(response_format, SingleChoiceFormat | MultipleChoiceFormat):
         return [option.id for option in response_format.options]
@@ -113,9 +112,7 @@ def _response_options(response_format: ResponseFormat) -> str:
 def _question_prompt(item: Item) -> str:
     answers = _response_options(item.response_format)
     return (
-        f"{item.text}\n\n"
-        f"Allowed answers:\n{answers}\n\n"
-        "Reply with exactly one allowed answer id."
+        f"{item.text}\n\nAllowed answers:\n{answers}\n\nReply with exactly one allowed answer id."
     )
 
 
@@ -317,7 +314,34 @@ def run_questionnaire(
     run_id: str | None = None,
     write_session_record: bool = True,
     response_metadata: dict[str, object] | None = None,
+    context: str | None = None,
 ) -> list[ItemResponseRecord]:
+    """Run one questionnaire synchronously for a single persona.
+
+    Args:
+        persona: Persona that the model should assume for the whole session.
+        questionnaire: Validated questionnaire definition whose items are asked in
+            order.
+        settings: Provider and model settings used for each item-level call.
+        client: Synchronous OpenAI-compatible client wrapper.
+        project_root: Repository or experiment root under which JSONL output is
+            written.
+        experiment_id: Optional stable experiment identifier. When omitted, a
+            generated three-part identifier is used.
+        session_id: Optional ``session-[uuid]`` value. When omitted, a new session
+            identifier is generated.
+        run_id: Optional run directory name. When omitted, a timestamped
+            ``run-{questionnaire}-{model}-{timestamp}`` identifier is generated.
+        write_session_record: Whether to append run-level metadata records.
+        response_metadata: Optional metadata copied into each item response record.
+        context: Optional supplemental text inserted into the initial persona
+            prompt, such as a vignette or paragraph the model should read before
+            answering questionnaire items.
+
+    Returns:
+        Item-level response records in questionnaire order. Each record is also
+        appended to the subject JSONL file under the resolved run directory.
+    """
     resolved_experiment_id = (
         validate_experiment_id(experiment_id) if experiment_id else generate_experiment_id()
     )
@@ -343,7 +367,9 @@ def run_questionnaire(
         questionnaire_id=questionnaire.id,
         model=settings.model,
     )
-    history: list[Message] = [{"role": "system", "content": render_persona_intro(persona)}]
+    history: list[Message] = [
+        {"role": "system", "content": render_persona_intro(persona, context=context)}
+    ]
     records: list[ItemResponseRecord] = []
 
     for item in questionnaire.items:
@@ -446,7 +472,29 @@ def run_persona_questionnaire_batch(
     persona_count: int = 100,
     seed: int | None = None,
     persona_config: PersonaGenerationConfig | None = None,
+    context: str | None = None,
 ) -> BatchRunResult:
+    """Generate personas and run the same questionnaire for each one.
+
+    Args:
+        questionnaire: Validated questionnaire definition to administer.
+        settings: Provider and model settings used for item-level calls.
+        client: Synchronous OpenAI-compatible client wrapper.
+        project_root: Repository or experiment root under which experiment files
+            are written.
+        experiment_id: Optional stable experiment identifier. When omitted, a
+            generated three-part identifier is used.
+        persona_count: Number of generated personas to create and run.
+        seed: Optional seed used for reproducible persona generation and run ID
+            generation.
+        persona_config: Optional demographic generation configuration.
+        context: Optional supplemental text inserted into every persona's initial
+            prompt before questionnaire items are asked.
+
+    Returns:
+        Batch run metadata containing the experiment ID, shared session ID,
+        generated personas, and the single aggregate run record.
+    """
     resolved_experiment_id = (
         validate_experiment_id(experiment_id) if experiment_id else generate_experiment_id(seed)
     )
@@ -510,6 +558,7 @@ def run_persona_questionnaire_batch(
             session_id=session_id,
             run_id=run_id,
             write_session_record=False,
+            context=context,
         )
         all_records.extend(records)
         run_status = _response_status(records)
@@ -574,7 +623,28 @@ def run_protocol_experiment(
     client: SyncLlmClient,
     project_root: Path,
     experiment_id: str | None = None,
+    context: str | None = None,
 ) -> BatchRunResult:
+    """Expand a protocol design and run its questionnaire conditions.
+
+    Args:
+        protocol: Factorial or paired protocol defining base personas, factors,
+            levels, and iterations.
+        questionnaire: Validated questionnaire definition to administer to each
+            expanded protocol subject.
+        settings: Provider and model settings used for item-level calls.
+        client: Synchronous OpenAI-compatible client wrapper.
+        project_root: Repository or experiment root under which experiment files
+            are written.
+        experiment_id: Optional stable experiment identifier. When omitted, a
+            generated three-part identifier is derived from the protocol seed.
+        context: Optional supplemental text inserted into every expanded persona's
+            initial prompt before questionnaire items are asked.
+
+    Returns:
+        Batch run metadata containing the experiment ID, shared session ID,
+        expanded personas, and the single aggregate run record.
+    """
     resolved_experiment_id = (
         validate_experiment_id(experiment_id)
         if experiment_id
@@ -643,6 +713,7 @@ def run_protocol_experiment(
             run_id=run_id,
             write_session_record=False,
             response_metadata=_assignment_metadata(protocol, assignment),
+            context=context,
         )
         all_records.extend(records)
         statuses.append(_response_status(records))
@@ -717,7 +788,34 @@ async def run_questionnaire_async(
     run_id: str | None = None,
     write_session_record: bool = True,
     response_metadata: dict[str, object] | None = None,
+    context: str | None = None,
 ) -> list[ItemResponseRecord]:
+    """Run one questionnaire asynchronously for a single persona.
+
+    Args:
+        persona: Persona that the model should assume for the whole session.
+        questionnaire: Validated questionnaire definition whose items are asked in
+            order.
+        settings: Provider and model settings used for each item-level call.
+        client: Async OpenAI-compatible client wrapper.
+        project_root: Repository or experiment root under which JSONL output is
+            written.
+        experiment_id: Optional stable experiment identifier. When omitted, a
+            generated three-part identifier is used.
+        session_id: Optional ``session-[uuid]`` value. When omitted, a new session
+            identifier is generated.
+        run_id: Optional run directory name. When omitted, a timestamped
+            ``run-{questionnaire}-{model}-{timestamp}`` identifier is generated.
+        write_session_record: Whether to append run-level metadata records.
+        response_metadata: Optional metadata copied into each item response record.
+        context: Optional supplemental text inserted into the initial persona
+            prompt, such as a vignette or paragraph the model should read before
+            answering questionnaire items.
+
+    Returns:
+        Item-level response records in questionnaire order. Each record is also
+        appended to the subject JSONL file under the resolved run directory.
+    """
     resolved_experiment_id = (
         validate_experiment_id(experiment_id) if experiment_id else generate_experiment_id()
     )
@@ -743,7 +841,9 @@ async def run_questionnaire_async(
         questionnaire_id=questionnaire.id,
         model=settings.model,
     )
-    history: list[Message] = [{"role": "system", "content": render_persona_intro(persona)}]
+    history: list[Message] = [
+        {"role": "system", "content": render_persona_intro(persona, context=context)}
+    ]
     records: list[ItemResponseRecord] = []
 
     for item in questionnaire.items:

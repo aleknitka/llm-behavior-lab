@@ -19,3 +19,19 @@ def test_render_persona_intro_handles_missing_features() -> None:
     prompt = render_persona_intro(Persona(persona_id="p1", features={}))
 
     assert "No demographic features were provided." in prompt
+
+
+def test_render_persona_intro_includes_optional_context() -> None:
+    prompt = render_persona_intro(
+        Persona(persona_id="p1", features={"age": "35"}),
+        context="Read this product description before answering the questionnaire.",
+    )
+
+    assert "Additional context:" in prompt
+    assert "Read this product description before answering the questionnaire." in prompt
+
+
+def test_render_persona_intro_omits_context_section_when_context_is_missing() -> None:
+    prompt = render_persona_intro(Persona(persona_id="p1", features={"age": "35"}))
+
+    assert "Additional context:" not in prompt

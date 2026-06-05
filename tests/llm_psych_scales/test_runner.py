@@ -57,6 +57,7 @@ def test_run_questionnaire_retains_context_and_saves_records(tmp_path) -> None:
         client=client,
         project_root=tmp_path,
         experiment_id="pilot-study-one",
+        context="Read this vignette before answering.",
     )
 
     assert len(records) == len(BFI_10.items)
@@ -72,6 +73,8 @@ def test_run_questionnaire_retains_context_and_saves_records(tmp_path) -> None:
     assert isinstance(records[0].answer, LikertAnswerValue)
     assert records[0].answer.value == 1
     assert records[0].answer.label == "Strongly agree"
+    assert "Additional context:" in client.calls[0][0]["content"]
+    assert "Read this vignette before answering." in client.calls[0][0]["content"]
     assert len(client.calls[1]) > len(client.calls[0])
     response_path = (
         tmp_path
@@ -132,13 +135,7 @@ def test_run_questionnaire_sets_and_persists_seed_for_each_item(tmp_path) -> Non
     record_seeds = [record.metadata["seed"] for record in records]
     assert client.seeds == record_seeds
     assert len(set(record_seeds)) == len(BFI_10.items)
-    run_path = (
-        tmp_path
-        / "experiments"
-        / "pilot-study-one"
-        / records[0].run_id
-        / "run.jsonl"
-    )
+    run_path = tmp_path / "experiments" / "pilot-study-one" / records[0].run_id / "run.jsonl"
     run_row = json.loads(run_path.read_text(encoding="utf-8"))
     assert run_row["metadata"]["base_seed"] == 123
 
@@ -224,6 +221,7 @@ async def test_run_questionnaire_async_saves_records(tmp_path) -> None:
         client=client,
         project_root=tmp_path,
         experiment_id="pilot-study-one",
+        context="Read this async vignette before answering.",
     )
 
     assert len(records) == len(BFI_10.items)
@@ -232,6 +230,8 @@ async def test_run_questionnaire_async_saves_records(tmp_path) -> None:
     assert records[0].answer.value == 5
     assert records[0].answer.label == "Strongly disagree"
     assert records[0].logprobs == {"tokens": []}
+    assert "Additional context:" in client.calls[0][0]["content"]
+    assert "Read this async vignette before answering." in client.calls[0][0]["content"]
     response_path = (
         tmp_path
         / "experiments"

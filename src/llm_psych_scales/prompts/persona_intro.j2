@@ -11,6 +11,11 @@ Adopt the following persona profile for the entire session:
 - No demographic features were provided.
 {% endif %}
 
+{% if context %}
+Additional context:
+{{ context }}
+{% endif %}
+
 Instructions:
 - Answer as this persona would answer, using the profile above as stable context.
 - Choose the answer that best fits this persona's likely attitudes, preferences, and lived context.

@@ -42,6 +42,7 @@ class Scale(BaseModel):
     construct: str
     description: str | None = None
     item_mappings: list[ItemMapping]
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class Transformation(StrEnum):
@@ -91,7 +92,5 @@ class Questionnaire(BaseModel):
     @classmethod
     def validate_shorthand(cls, value: str) -> str:
         if not re.fullmatch(r"[a-z0-9]{3,7}", value):
-            raise ValueError(
-                "questionnaire shorthand must be 3-7 lowercase letters or digits"
-            )
+            raise ValueError("questionnaire shorthand must be 3-7 lowercase letters or digits")
         return value

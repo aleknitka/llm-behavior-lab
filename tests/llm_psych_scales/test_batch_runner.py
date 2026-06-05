@@ -12,12 +12,16 @@ from llm_psych_scales.runner import run_persona_questionnaire_batch, run_protoco
 
 
 class FakeBatchClient:
+    def __init__(self) -> None:
+        self.calls: list[list[dict[str, str]]] = []
+
     def complete(
         self,
         messages: Sequence[dict[str, str]],
         settings: ModelSettings,
         allowed_answer_ids: Sequence[str],
     ) -> LlmQuestionResult:
+        self.calls.append(list(messages))
         return LlmQuestionResult(
             selected_answer_id=allowed_answer_ids[0],
             raw_response=allowed_answer_ids[0],
@@ -98,13 +102,7 @@ def test_batch_response_records_share_experiment_session_and_run_ids(tmp_path) -
     )
 
     run = result.runs[0]
-    responses_root = (
-            tmp_path
-            / "experiments"
-            / result.experiment_id
-            / run.run_id
-            / "responses"
-    )
+    responses_root = tmp_path / "experiments" / result.experiment_id / run.run_id / "responses"
     response_paths = sorted(responses_root.glob("*.jsonl"))
     assert len(response_paths) == 2
 
@@ -115,10 +113,32 @@ def test_batch_response_records_share_experiment_session_and_run_ids(tmp_path) -
         assert responses_path.name == f"{response_rows[0]['subject_id']}.jsonl"
         assert {row["session_id"] for row in response_rows} == {result.session_id}
         assert {row["run_id"] for row in response_rows} == {run.run_id}
-        assert {row["metadata"]["experiment_id"] for row in response_rows} == {
-            result.experiment_id
-        }
+        assert {row["metadata"]["experiment_id"] for row in response_rows} == {result.experiment_id}
         assert list(response_rows[0])[:3] == ["subject_id", "session_id", "run_id"]
+
+
+def test_batch_runner_passes_context_to_questionnaire_prompt(tmp_path) -> None:
+    settings = ModelSettings(
+        model="openai/gpt-oss-20b",
+        provider_base_url="http://localhost:1234/v1",
+        temperature=0.2,
+        timeout_seconds=60.0,
+    )
+    client = FakeBatchClient()
+
+    run_persona_questionnaire_batch(
+        questionnaire=BFI_10,
+        settings=settings,
+        client=client,
+        project_root=tmp_path,
+        experiment_id="bfi10-lmstudio-test",
+        persona_count=1,
+        seed=15,
+        context="Read this batch vignette before answering.",
+    )
+
+    assert "Additional context:" in client.calls[0][0]["content"]
+    assert "Read this batch vignette before answering." in client.calls[0][0]["content"]
 
 
 def test_batch_run_record_does_not_duplicate_persona_snapshot(tmp_path) -> None:
@@ -139,13 +159,7 @@ def test_batch_run_record_does_not_duplicate_persona_snapshot(tmp_path) -> None:
         seed=14,
     )
 
-    run_path = (
-        tmp_path
-        / "experiments"
-        / result.experiment_id
-        / result.runs[0].run_id
-        / "run.jsonl"
-    )
+    run_path = tmp_path / "experiments" / result.experiment_id / result.runs[0].run_id / "run.jsonl"
     run_row = json.loads(run_path.read_text(encoding="utf-8"))
 
     assert "persona_snapshot" not in run_row
@@ -210,9 +224,7 @@ def test_batch_runner_uses_persona_generation_config(tmp_path) -> None:
     )
 
     assert {persona.features.country for persona in result.personas.personas} == {"PL"}
-    assert {persona.features.affluence_level for persona in result.personas.personas} == {
-        "middle"
-    }
+    assert {persona.features.affluence_level for persona in result.personas.personas} == {"middle"}
 
 
 def test_protocol_runner_writes_protocol_artifacts_and_metadata(tmp_path) -> None:
@@ -253,13 +265,15 @@ def test_protocol_runner_writes_protocol_artifacts_and_metadata(tmp_path) -> Non
         }
     )
 
+    client = FakeBatchClient()
     result = run_protocol_experiment(
         protocol=protocol,
         questionnaire=BFI_10,
         settings=settings,
-        client=FakeBatchClient(),
+        client=client,
         project_root=tmp_path,
         experiment_id="proto-study-one",
+        context="Read this protocol vignette before answering.",
     )
 
     experiment_root = tmp_path / "experiments" / "proto-study-one"
@@ -288,3 +302,5 @@ def test_protocol_runner_writes_protocol_artifacts_and_metadata(tmp_path) -> Non
     assert response_rows[0]["metadata"]["iteration_index"] == assignment["iteration_index"]
     assert response_rows[0]["metadata"]["factor_values"]["gender"] in {"female", "male"}
     assert "persona_snapshot" not in response_rows[0]
+    assert "Additional context:" in client.calls[0][0]["content"]
+    assert "Read this protocol vignette before answering." in client.calls[0][0]["content"]
