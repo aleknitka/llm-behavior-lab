@@ -4,6 +4,29 @@ This guide describes the complete lifecycle from a study design to scored, tabul
 results. Each stage is explicit so an experiment can be inspected, reproduced, or
 restarted without silently regenerating earlier inputs.
 
+## 0. Discover a Questionnaire
+
+List available instruments:
+
+```bash
+uv run llm-behavior-lab questionnaire-list
+```
+
+Inspect one instrument before designing the study:
+
+```bash
+uv run llm-behavior-lab questionnaire-describe consumer_involvement
+```
+
+The description reports the stable ID, version, language, citation, licence,
+source URL, item count, scale IDs, scoring-model IDs, response formats, and
+required parameters. Add `--json` to either command when generating scripts or
+other tooling.
+
+Discovery is local and read-only. It does not load provider credentials, contact
+an API, or create files. Use the exact stable ID shown by discovery; shorthand
+aliases such as `bfi10` and `pdmi` are not accepted.
+
 ## 1. Design
 
 Create a validated manifest:
@@ -35,6 +58,9 @@ For target-dependent questionnaires, repeat `--questionnaire-param KEY=VALUE`:
 --questionnaire consumer_involvement \
 --questionnaire-param "target=meal delivery services"
 ```
+
+`scale-design` rejects missing, blank, unknown, or unexpected questionnaire
+parameters before it writes the experiment manifest.
 
 Use `--protocol protocol.json` instead of `--persona-count` for a paired-factorial
 design. The protocol remains validated by `ExperimentProtocol`.

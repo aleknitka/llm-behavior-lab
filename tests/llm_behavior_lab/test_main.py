@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,6 +58,73 @@ def test_parser_accepts_staged_design_command() -> None:
     assert args.experiment_id == "pilot-study-one"
     assert args.persona_count == 10
     assert args.scoring_model_id is None
+
+
+def test_parser_accepts_questionnaire_discovery_commands() -> None:
+    list_args = build_parser().parse_args(["questionnaire-list", "--json"])
+    describe_args = build_parser().parse_args(["questionnaire-describe", "bfi_10", "--json"])
+
+    assert list_args.command == "questionnaire-list"
+    assert list_args.json is True
+    assert describe_args.command == "questionnaire-describe"
+    assert describe_args.questionnaire_id == "bfi_10"
+    assert describe_args.json is True
+
+
+def test_questionnaire_list_prints_human_readable_catalog(capsys) -> None:
+    result = main(["questionnaire-list"])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "bfi_10" in output
+    assert "consumer_involvement" in output
+    assert "purchase_decision_making_inventory" in output
+    assert "target (required)" in output
+
+
+def test_questionnaire_list_prints_json_without_creating_artifacts(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = main(["questionnaire-list", "--json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert [entry["id"] for entry in payload] == [
+        "bfi_10",
+        "consumer_involvement",
+        "purchase_decision_making_inventory",
+    ]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_questionnaire_describe_prints_detailed_human_output(capsys) -> None:
+    result = main(["questionnaire-describe", "consumer_involvement"])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Consumer Involvement Scale" in output
+    assert "Items: 12" in output
+    assert "Response formats: likert" in output
+    assert "target (required)" in output
+    assert "meal delivery services" in output
+
+
+def test_questionnaire_describe_prints_json(capsys) -> None:
+    result = main(["questionnaire-describe", "bfi_10", "--json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["id"] == "bfi_10"
+    assert payload["item_count"] == 10
+    assert payload["scoring_model_ids"] == ["default"]
+    assert payload["parameters"] == []
+
+
+def test_questionnaire_describe_rejects_shorthand_alias() -> None:
+    with pytest.raises(ValueError, match="unknown questionnaire_id: bfi10"):
+        main(["questionnaire-describe", "bfi10"])
 
 
 def test_parser_accepts_log_level() -> None:
