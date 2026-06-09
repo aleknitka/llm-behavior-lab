@@ -23,7 +23,7 @@ Do not commit `.local_sources/`, PDFs, `Zone.Identifier` files, or extracted tem
 
 ## Key Changes
 
-- Add `src/llm_psych_scales/questionnaires/pdmi/`.
+- Add `src/llm_behavior_lab/questionnaires/pdmi/`.
 - Export `PURCHASE_DECISION_MAKING_INVENTORY`.
 - Optionally export alias `PDMI`.
 - Use a shared `LikertFormat(min_value=1, max_value=5)` with labels:
@@ -37,7 +37,7 @@ Do not commit `.local_sources/`, PDFs, `Zone.Identifier` files, or extracted tem
   - Emotional: `impulsivity`, `indebtedness`, `negative_emotions`, `frustration`, `hedonism`
   - Reasoned: `saving`, `reasoning`, `search_of_information`
 - Store factor loadings, source table, source scale, Cronbach alpha where available, variance explained where available, DOI, source URL, article citation, and licence in metadata.
-- Add `src/llm_psych_scales/questionnaires/pdmi/README.md` documenting:
+- Add `src/llm_behavior_lab/questionnaires/pdmi/README.md` documenting:
   - source paper and DOI
   - response format
   - emotional/reasoned sections
@@ -47,7 +47,7 @@ Do not commit `.local_sources/`, PDFs, `Zone.Identifier` files, or extracted tem
 
 ## Test Plan
 
-Add `tests/llm_psych_scales/questionnaires/test_pdmi.py` covering:
+Add `tests/llm_behavior_lab/questionnaires/test_pdmi.py` covering:
 
 - `PURCHASE_DECISION_MAKING_INVENTORY` validates as a `Questionnaire`.
 - Questionnaire identity:
@@ -69,7 +69,7 @@ Add `tests/llm_psych_scales/questionnaires/test_pdmi.py` covering:
 Run verification:
 
 ```bash
-uv run pytest tests/llm_psych_scales/questionnaires/test_pdmi.py -q
+uv run pytest tests/llm_behavior_lab/questionnaires/test_pdmi.py -q
 uv run pytest -q
 uv run ruff check .
 uv run ty check
