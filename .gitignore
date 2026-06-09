@@ -11,3 +11,5 @@ coverage.xml
 .env
 TODO.md
 .local_sources/
+experiments/
+__marimo__/
