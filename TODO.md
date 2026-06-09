@@ -1,1 +1,0 @@
-1. In persona_intro.j2 add space for potential injection of {% context %} user may want to ask LLM to read a paragraph before it answers some questions. THis should only be shown if any context was given to the LLM.

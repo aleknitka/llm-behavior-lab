@@ -9,3 +9,5 @@ build/
 .coverage
 coverage.xml
 .env
+TODO.md
+.local_sources/

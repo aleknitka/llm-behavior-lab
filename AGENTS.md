@@ -2,12 +2,13 @@
 
 ## Project Purpose
 
-This repository is an application for running LLM-based psychological questionnaire sessions with generated personas.
+This repository runs persona-based LLM questionnaire sessions and stateful
+behavioral experiments.
 
 The project should grow beyond a single questionnaire or fixed persona set. It is
-intended to support multiple standardized questionnaires, extensible persona feature
-maps, and simple experimental designs that compare how selected persona parameters
-influence simulated questionnaire results.
+intended to support multiple standardized questionnaires, behavioral tasks,
+extensible persona feature maps, and experimental designs that compare how
+selected persona parameters influence simulated responses and decisions.
 
 The app should allow a user to:
 
@@ -15,8 +16,9 @@ The app should allow a user to:
 2. Ask an OpenAI-compatible LLM to assume that persona.
 3. Optionally expand generated personas through paired or factorial protocol designs
    that manipulate selected fields while keeping the remaining base persona stable.
-4. Run a chat session with that persona by asking questions from standard psychological questionnaires.
-5. Save response data in JSONL format for later analysis.
+4. Run a questionnaire or a multi-trial behavioral task while retaining the
+   appropriate interaction history.
+5. Save item or trial data in JSONL format for later analysis.
 
 ## Development Approach
 
@@ -27,8 +29,9 @@ The app should allow a user to:
 - Prefer small functions and straightforward data models over complex object hierarchies.
 - Add structure only when it is clearly needed by existing behavior or tests.
 - Make expansions easy to maintain: new persona fields should fit the existing
-  persona models and factory flow, and new questionnaires should fit the shared
-  questionnaire base models.
+  persona models and factory flow, new questionnaires should fit the shared
+  questionnaire base models, and repeated-choice tasks should fit the behavioral
+  task protocol.
 
 ## Dependencies and Tooling
 
@@ -58,19 +61,43 @@ The standard workflow is:
 3. Render a persona prompt from those inputs.
 4. Ask the LLM to assume the persona.
 5. Optionally expand base personas into protocol conditions and iterations for parameter-comparison designs.
-6. Load one or more questionnaire definitions.
-7. Ask questions one by one using each item's response format.
-8. Retain prior question and answer context during the questionnaire chat when the questionnaire requests it.
-9. Capture the model answer, structured output if available, logprobs if available, and relevant metadata.
-10. Append records to JSONL for later analysis.
+6. Load one questionnaire definition or one behavioral task definition.
+7. Ask questionnaire items or repeatedly present task observations.
+8. Retain prior context requested by the procedure.
+9. For tasks, validate the selected action and apply the deterministic
+   environment transition before revealing feedback.
+10. Capture model output, structured output if available, logprobs if available,
+    and relevant metadata.
+11. Append item or trial records to JSONL for later analysis.
+
+## Behavioral Task Format
+
+Stateful tasks live under `src/llm_behavior_lab/behavioral_tasks/`.
+
+- Task implementations expose instruction, initial state, observation, action
+  application, completion, and summary behavior.
+- The task environment owns schedules, rewards, losses, and state transitions.
+  The LLM only selects one of the allowed model-facing actions.
+- Resolve and persist hidden schedules before the first provider call.
+- Keep internal action IDs, future outcomes, advantageous classifications, and
+  recognized task names out of model-facing prompts when they could reveal the
+  solution.
+- Treat a persisted successful transition as the resume commit boundary.
+- Resume an existing task only when its explicit run ID is supplied. Replaying
+  completed records must reproduce every persisted transition exactly.
+- Do not retry a failed or twice-invalid subject unless retry was explicitly
+  requested; preserve the prior attempt records when retrying.
+- Keep trials sequential within one subject; bounded concurrency may be used
+  across subjects.
+- Do not interpret provider latency as human reaction time.
 
 ## Questionnaire Format
 
 Multiple questionnaires should be runnable through a standardized form.
 
-New questionnaire source data should be stored as Python module-level constants under `src/llm_psych_scales/questionnaires/` and built with the Pydantic models in `src/llm_psych_scales/questionnaires/base/`.
+New questionnaire source data should be stored as Python module-level constants under `src/llm_behavior_lab/questionnaires/` and built with the Pydantic models in `src/llm_behavior_lab/questionnaires/base/`.
 
-Use `llm_psych_scales.questionnaires.base.scale.Questionnaire` as the source-of-truth object for newly coded questionnaires. It stores:
+Use `llm_behavior_lab.questionnaires.base.scale.Questionnaire` as the source-of-truth object for newly coded questionnaires. It stores:
 
 - `id`, `name`, `version`, optional `language`, `reference`, and `licence`.
 - `sections`, where each `Section` groups ordered `item_ids`.
@@ -79,7 +106,7 @@ Use `llm_psych_scales.questionnaires.base.scale.Questionnaire` as the source-of-
 - `scoring_models`, where each `ScoringModel` defines versioned `ScaleScoringRule` entries using `sum`, `mean`, or `weighted_mean` transformations plus optional output ranges and interpretation bands.
 - `metadata` for questionnaire-level details that do not deserve first-class fields yet.
 
-Use `llm_psych_scales.questionnaires.base.response_formats` for response data:
+Use `llm_behavior_lab.questionnaires.base.response_formats` for response data:
 
 - `LikertFormat` for numeric Likert scales with optional anchor labels.
 - `NumericFormat` for free numeric responses and optional units or bounds.
@@ -104,31 +131,43 @@ When coding a questionnaire:
 
 ## Persistence
 
-- Save questionnaire run data as JSONL.
-- Each line should represent a clear analysis unit, preferably one answered item with its questionnaire, prompt messages, typed answer, raw response, structured response, logprobs if available, status, errors, and run/session metadata.
+- Save questionnaire and behavioral-task run data as JSONL.
+- Each line should represent a clear analysis unit: one answered questionnaire
+  item or one task trial with its attempts and deterministic transition.
 - Keep the JSONL schema stable and validate records with Pydantic before writing.
-- Do not duplicate full questionnaire definitions into every result line. Store questionnaire definitions in code under `src/llm_psych_scales/questionnaires/`; store result lines with stable questionnaire, item, scale, model, prompt, persona, provider, and response identifiers or metadata needed for later analysis.
-- Current runtime data is stored under `experiments/{experiment_id}/run-{questionnaire}-{model}-{timestamp}/`.
+- Do not duplicate full questionnaire definitions into every result line. Store questionnaire definitions in code under `src/llm_behavior_lab/questionnaires/`; store result lines with stable questionnaire, item, scale, model, prompt, persona, provider, and response identifiers or metadata needed for later analysis.
+- Scale runtime data is stored under
+  `experiments/{experiment_id}/run-{questionnaire}-{model}-{timestamp}/`.
+- Behavioral-task runtime data is stored under
+  `experiments/{experiment_id}/run-task-{task}-{model}-{timestamp}/`.
 - Experiment roots can also contain `personas.jsonl`, `metadata.jsonl`, and, for protocol runs, `protocol.json`, `base_personas.jsonl`, and `protocol_assignments.jsonl`.
 - Experiment IDs must be exactly three lowercase letter-or-digit items separated by hyphens, such as `pilot-study-one`; reject spaces, underscores, dots, path separators, and other symbols.
 - Session IDs must be `session-[uuid]`.
-- Run IDs currently use the directory form `run-{questionnaire}-{model}-{timestamp}` unless explicitly supplied in lower-level runner calls.
-- Run directories currently contain `run.jsonl`, `scale.json`, and `responses/{subject_id}.jsonl`.
+- Scale run directories contain `run.jsonl`, `scale.json`, and
+  `responses/{subject_id}.jsonl`.
+- Task run directories contain `run.jsonl`, `task.json`, subject schedules,
+  compact conversations, and `responses/{subject_id}.jsonl`.
 
 ## Response and Session Data
 
-Runtime response data should use the Pydantic models in `src/llm_psych_scales/responses/base/`.
+Runtime response data should use the Pydantic models in `src/llm_behavior_lab/responses/base/`.
 
-- Use `RunRecord` for run-level metadata: experiment and session IDs, run ID, subject IDs, questionnaire ID and version, provider snapshot, timestamps, status, output paths, and metadata.
+- Use `RunRecord` for generic procedure metadata: experiment and session IDs,
+  run ID, subject IDs, procedure kind/ID/version, provider snapshot, timestamps,
+  status, output paths, and metadata.
 - Use `SessionRecord` when session-level metadata needs to be persisted separately.
 - Use `ItemResponseRecord` for item-level JSONL analysis units: stable questionnaire and item IDs, item order/text, response format type, prompt messages, parsed answer, raw response, structured response, logprobs, status, errors, and metadata.
 - Use typed answer values instead of ad hoc nullable fields: `LikertAnswerValue`, `NumericAnswerValue`, `SingleChoiceAnswerValue`, `MultipleChoiceAnswerValue`, and `TextAnswerValue`.
 - Keep provider-specific or experiment-specific details inside explicit `metadata` fields unless they become stable first-class fields.
 - Do not add scoring outputs to response records until scoring is implemented against questionnaire `scales` and `scoring_models`.
+- Use `TaskTrialRecord` for task attempts, observations, transitions, message
+  indexes, status, errors, and task metadata.
 
 ## Testing
 
-- Add unit tests with `pytest` for data validation, questionnaire loading, prompt rendering, provider capability handling, and JSONL serialization.
+- Add unit tests with `pytest` for data validation, questionnaire/task loading,
+  prompt masking, deterministic transitions, resume behavior, provider
+  capability handling, and JSONL serialization.
 - Prefer tests that exercise behavior without requiring live model calls.
 - Mock or fake OpenAI-compatible API clients in unit tests.
 - Run `ruff`, `ty`, and `pytest` before claiming implementation work is complete.

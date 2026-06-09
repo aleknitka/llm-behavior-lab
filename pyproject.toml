@@ -1,7 +1,7 @@
 [project]
-name = "llm-psych-scales"
+name = "llm-behavior-lab"
 version = "0.1.0"
-description = "Run LLM persona-based psychological questionnaire sessions and save JSONL results."
+description = "Run persona-based LLM questionnaire and behavioral-task experiments."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -9,12 +9,13 @@ dependencies = [
     "jinja2>=3.1.6",
     "loguru>=0.7.3",
     "openai>=1.84.0",
+    "pingouin>=0.6.1",
     "pycountry>=26.2.16",
     "pydantic>=2.11.5",
 ]
 
 [project.scripts]
-llm-psych-scales = "llm_psych_scales.main:main"
+llm-behavior-lab = "llm_behavior_lab.main:main"
 
 [dependency-groups]
 dev = [
@@ -34,7 +35,7 @@ build-backend = "hatchling.build"
 package = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/llm_psych_scales"]
+packages = ["src/llm_behavior_lab"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -42,7 +43,7 @@ pythonpath = ["src"]
 
 [tool.ruff]
 exclude = [
-    "src/llm_psych_scales/.personas_root_owned_backup",
+    "src/llm_behavior_lab/.personas_root_owned_backup",
 ]
 line-length = 100
 src = ["src", "tests"]
