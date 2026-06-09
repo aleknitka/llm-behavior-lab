@@ -19,6 +19,18 @@ use the same client boundary.
 
 ## Scale Workflow
 
+Inspect the coded questionnaires before designing a study:
+
+```bash
+uv run llm-behavior-lab questionnaire-list
+uv run llm-behavior-lab questionnaire-describe bfi_10
+```
+
+Add `--json` to either command for machine-readable metadata. Discovery does not
+load provider credentials, contact a model, or create experiment artifacts.
+Questionnaire selection uses exact stable IDs; the current IDs are `bfi_10`,
+`consumer_involvement`, and `purchase_decision_making_inventory`.
+
 ```bash
 uv run llm-behavior-lab scale-design \
   --experiment-id pilot-study-one \
@@ -143,6 +155,8 @@ Questionnaire definitions live under
 
 Current questionnaires include BFI-10, Consumer Involvement, and the
 [Purchase Decision-Making Inventory](src/llm_behavior_lab/questionnaires/pdmi/README.md).
+Use `questionnaire-describe` to inspect each instrument's citation, licence,
+response formats, scales, scoring models, and required builder parameters.
 
 ## Python API
 

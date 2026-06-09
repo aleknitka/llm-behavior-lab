@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from llm_behavior_lab.questionnaires.base.scale import Questionnaire
-from llm_behavior_lab.questionnaires.catalog import resolve_questionnaire
+from llm_behavior_lab.questionnaires.catalog import (
+    describe_questionnaire,
+    resolve_questionnaire,
+)
 from llm_behavior_lab.responses.base import ItemResponseRecord
 from llm_behavior_lab.scoring.engine import score_records
 from llm_behavior_lab.scoring.models import (
@@ -32,7 +35,13 @@ def score_run(run_root: Path, scoring_model_id: str | None = None) -> ScoreRunRe
     questionnaire = snapshot
     used_fallback = False
     if not questionnaire.scoring_models:
-        current = resolve_questionnaire(questionnaire.id, questionnaire.metadata)
+        descriptor = describe_questionnaire(questionnaire.id)
+        parameters = {
+            parameter.name: str(questionnaire.metadata[parameter.name])
+            for parameter in descriptor.parameters
+            if parameter.name in questionnaire.metadata
+        }
+        current = resolve_questionnaire(questionnaire.id, parameters)
         _validate_legacy_compatibility(snapshot, current)
         questionnaire = current
         used_fallback = True

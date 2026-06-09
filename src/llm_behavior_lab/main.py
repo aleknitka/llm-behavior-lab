@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -39,7 +40,12 @@ from llm_behavior_lab.experiments import (
 from llm_behavior_lab.models import ModelSettings, ProviderCapabilities
 from llm_behavior_lab.personas.factory import PersonaGenerationConfig
 from llm_behavior_lab.protocols import ExperimentProtocol, ProtocolAssignment
-from llm_behavior_lab.questionnaires.catalog import resolve_questionnaire
+from llm_behavior_lab.questionnaires.catalog import (
+    QuestionnaireDescriptor,
+    describe_questionnaire,
+    list_questionnaires,
+    resolve_questionnaire,
+)
 from llm_behavior_lab.runner import run_persisted_persona_batch
 from llm_behavior_lab.scoring import export_results, score_run
 
@@ -72,6 +78,18 @@ def _common_parser(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="llm-behavior-lab")
     commands = parser.add_subparsers(dest="command", required=True)
+
+    questionnaire_list = commands.add_parser(
+        "questionnaire-list", help="List coded questionnaires without contacting a provider."
+    )
+    questionnaire_list.add_argument("--json", action="store_true")
+
+    questionnaire_describe = commands.add_parser(
+        "questionnaire-describe",
+        help="Describe one coded questionnaire without contacting a provider.",
+    )
+    questionnaire_describe.add_argument("questionnaire_id")
+    questionnaire_describe.add_argument("--json", action="store_true")
 
     design = commands.add_parser(
         "scale-design", help="Create a validated questionnaire experiment manifest."
@@ -163,6 +181,54 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parameter_summary(descriptor: QuestionnaireDescriptor) -> str:
+    if not descriptor.parameters:
+        return "none"
+    return ", ".join(
+        f"{parameter.name} ({'required' if parameter.required else 'optional'})"
+        for parameter in descriptor.parameters
+    )
+
+
+def _print_questionnaire_list(descriptors: list[QuestionnaireDescriptor], *, as_json: bool) -> None:
+    if as_json:
+        print(
+            json.dumps(
+                [descriptor.model_dump(mode="json") for descriptor in descriptors],
+                indent=2,
+            )
+        )
+        return
+    for descriptor in descriptors:
+        print(
+            f"{descriptor.id}: {descriptor.name} "
+            f"(version {descriptor.version}, {descriptor.item_count} items; "
+            f"parameters: {_parameter_summary(descriptor)})"
+        )
+
+
+def _print_questionnaire_description(descriptor: QuestionnaireDescriptor, *, as_json: bool) -> None:
+    if as_json:
+        print(descriptor.model_dump_json(indent=2))
+        return
+    print(f"{descriptor.name} ({descriptor.id})")
+    print(f"Version: {descriptor.version}")
+    print(f"Language: {descriptor.language or 'unspecified'}")
+    print(f"Items: {descriptor.item_count}")
+    print(f"Scales: {', '.join(descriptor.scale_ids) or 'none'}")
+    print(f"Scoring models: {', '.join(descriptor.scoring_model_ids) or 'none'}")
+    print(f"Response formats: {', '.join(descriptor.response_format_types)}")
+    print(f"Parameters: {_parameter_summary(descriptor)}")
+    for parameter in descriptor.parameters:
+        print(f"  {parameter.name}: {parameter.description}")
+        if parameter.example is not None:
+            print(f"  Example: {parameter.example}")
+    print(f"Reference: {descriptor.reference}")
+    print(f"Licence: {descriptor.licence}")
+    if descriptor.source_url is not None:
+        print(f"Source: {descriptor.source_url}")
+
+
 def configure_logging(level: str) -> None:
     logger.remove()
     logger.add(
@@ -249,7 +315,16 @@ def _assignment_metadata(project_root: Path, experiment_id: str):
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    configure_logging(args.log_level)
+    configure_logging(getattr(args, "log_level", "INFO"))
+    if args.command == "questionnaire-list":
+        _print_questionnaire_list(list_questionnaires(), as_json=args.json)
+        return 0
+    if args.command == "questionnaire-describe":
+        _print_questionnaire_description(
+            describe_questionnaire(args.questionnaire_id),
+            as_json=args.json,
+        )
+        return 0
     if args.command in {"scale-design", "task-design"}:
         protocol = load_protocol(args.protocol) if args.protocol else None
         personas = None
