@@ -36,6 +36,10 @@ def score_run(run_root: Path, scoring_model_id: str | None = None) -> ScoreRunRe
         _validate_legacy_compatibility(snapshot, current)
         questionnaire = current
         used_fallback = True
+    if not questionnaire.scoring_models:
+        raise ValueError(
+            f"questionnaire {questionnaire.id} has no executable scoring models"
+        )
     model_id = scoring_model_id or questionnaire.scoring_models[0].id
     scoring_model = next(
         (candidate for candidate in questionnaire.scoring_models if candidate.id == model_id),

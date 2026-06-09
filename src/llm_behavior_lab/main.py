@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     design.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     design.add_argument("--seed", type=int)
-    design.add_argument("--scoring-model-id", default="default")
+    design.add_argument("--scoring-model-id")
     design.add_argument("--context")
     design.add_argument("--logprobs", action=argparse.BooleanOptionalAction, default=True)
     design.add_argument("--structured-outputs", action="store_true", default=False)
@@ -266,9 +266,17 @@ def main(argv: list[str] | None = None) -> int:
                 scoring_model_id=args.scoring_model_id,
                 context=args.context,
             )
-            resolve_questionnaire(
+            questionnaire = resolve_questionnaire(
                 procedure.questionnaire_id, procedure.questionnaire_parameters
             )
+            if procedure.scoring_model_id is not None and all(
+                model.id != procedure.scoring_model_id
+                for model in questionnaire.scoring_models
+            ):
+                raise ValueError(
+                    f"unknown scoring model {procedure.scoring_model_id!r} "
+                    f"for {questionnaire.id}"
+                )
         else:
             task_config = load_task_config(args.task_config)
             procedure = TaskProcedureDesign(
@@ -364,8 +372,14 @@ def main(argv: list[str] | None = None) -> int:
         print(result.run_id)
         return 0
     if args.command == "scale-score":
+        design = load_experiment_design(args.project_root, args.experiment_id)
+        if not isinstance(design.procedure, ScaleProcedureDesign):
+            raise ValueError("experiment design is not a scale procedure")
         run_root = _run_root(args.project_root, args.experiment_id, args.run_id)
-        result = score_run(run_root, args.scoring_model_id)
+        scoring_model_id = (
+            args.scoring_model_id or design.procedure.scoring_model_id
+        )
+        result = score_run(run_root, scoring_model_id)
         print(result.output_root)
         return 0
     if args.command == "scale-results":

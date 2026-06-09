@@ -8,6 +8,7 @@ from llm_behavior_lab.experiments import (
     TaskProcedureDesign,
     create_experiment_design,
     load_experiment_design,
+    load_personas,
     materialize_personas,
 )
 
@@ -34,6 +35,7 @@ def test_design_round_trip_and_persona_materialization(tmp_path: Path) -> None:
     assert loaded == design
     assert len(batch.personas) == 2
     assert (path.parent / "personas.jsonl").exists()
+    assert load_personas(tmp_path, "pilot-study-one") == batch
 
 
 def test_task_design_round_trip() -> None:

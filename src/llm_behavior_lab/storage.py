@@ -124,7 +124,14 @@ def write_persona_batch_jsonl(project_root: Path, batch: PersonaBatch) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as file:
         file.write(
-            batch.model_dump_json(include={"metadata": True, "personas": True}) + "\n"
+            batch.model_dump_json(
+                include={
+                    "experiment_id": True,
+                    "metadata": True,
+                    "personas": True,
+                }
+            )
+            + "\n"
         )
     return path
 
@@ -133,7 +140,14 @@ def write_persona_batch_jsonl_at_path(path: Path, batch: PersonaBatch) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as file:
         file.write(
-            batch.model_dump_json(include={"metadata": True, "personas": True}) + "\n"
+            batch.model_dump_json(
+                include={
+                    "experiment_id": True,
+                    "metadata": True,
+                    "personas": True,
+                }
+            )
+            + "\n"
         )
     return path
 

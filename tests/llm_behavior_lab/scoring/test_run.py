@@ -1,7 +1,10 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from llm_behavior_lab.questionnaires.bfi10 import BFI_10
+from llm_behavior_lab.questionnaires.catalog import resolve_questionnaire
 from llm_behavior_lab.responses.base import (
     ItemResponseRecord,
     LikertAnswerValue,
@@ -87,3 +90,23 @@ def test_score_run_uses_validated_current_definition_for_legacy_snapshot(
     manifest = json.loads((result.output_root / "scoring.json").read_text())
     assert manifest["used_current_definition_fallback"] is True
     assert manifest["snapshot_definition_digest"] != manifest["scoring_definition_digest"]
+
+
+def test_score_run_rejects_questionnaire_without_executable_scoring_model(
+    tmp_path: Path,
+) -> None:
+    questionnaire = resolve_questionnaire(
+        "consumer_involvement",
+        {"target": "meal delivery services"},
+    )
+    run_root = tmp_path / "run-consumer-model-20260608120000"
+    (run_root / "responses").mkdir(parents=True)
+    (run_root / "scale.json").write_text(
+        questionnaire.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="questionnaire consumer_involvement has no executable scoring models",
+    ):
+        score_run(run_root)

@@ -1,12 +1,21 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from llm_behavior_lab.experiments import (
+    ExperimentDesign,
+    PersonaDesign,
+    ProviderDesign,
+    ScaleProcedureDesign,
+    create_experiment_design,
+)
 from llm_behavior_lab.main import (
     build_parser,
     load_env_file,
     load_persona_config,
     load_protocol,
+    main,
     parse_features,
     resolve_provider_config,
 )
@@ -47,6 +56,7 @@ def test_parser_accepts_staged_design_command() -> None:
     assert args.project_root == Path(".")
     assert args.experiment_id == "pilot-study-one"
     assert args.persona_count == 10
+    assert args.scoring_model_id is None
 
 
 def test_parser_accepts_log_level() -> None:
@@ -204,3 +214,103 @@ def test_resolve_provider_config_uses_dotenv_when_cli_and_environment_absent(mon
 
     assert config.base_url == "http://dotenv:1234/v1"
     assert config.api_key == "dotenv-key"  # pragma: allowlist secret
+
+
+def test_scale_score_uses_scoring_model_from_design_by_default(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    design = ExperimentDesign(
+        experiment_id="pilot-study-one",
+        procedure=ScaleProcedureDesign(
+            questionnaire_id="bfi_10",
+            scoring_model_id="construct_high",
+        ),
+        personas=PersonaDesign(count=1),
+        provider=ProviderDesign(model="test", base_url="http://localhost"),
+    )
+    create_experiment_design(tmp_path, design)
+    run_root = tmp_path / "experiments" / "pilot-study-one" / "run-bfi10-test-1"
+    run_root.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_score_run(path: Path, scoring_model_id: str | None):
+        captured["path"] = path
+        captured["scoring_model_id"] = scoring_model_id
+        return SimpleNamespace(output_root=path / "scoring" / "construct_high-1.0")
+
+    monkeypatch.setattr("llm_behavior_lab.main.score_run", fake_score_run)
+
+    result = main(
+        [
+            "scale-score",
+            "--project-root",
+            str(tmp_path),
+            "--experiment-id",
+            "pilot-study-one",
+        ]
+    )
+
+    assert result == 0
+    assert captured == {
+        "path": run_root,
+        "scoring_model_id": "construct_high",
+    }
+    assert "construct_high-1.0" in capsys.readouterr().out
+
+
+def test_scale_score_cli_override_takes_precedence_over_design(
+    tmp_path: Path, monkeypatch
+) -> None:
+    design = ExperimentDesign(
+        experiment_id="pilot-study-two",
+        procedure=ScaleProcedureDesign(
+            questionnaire_id="bfi_10",
+            scoring_model_id="design-model",
+        ),
+        personas=PersonaDesign(count=1),
+        provider=ProviderDesign(model="test", base_url="http://localhost"),
+    )
+    create_experiment_design(tmp_path, design)
+    run_root = tmp_path / "experiments" / "pilot-study-two" / "run-bfi10-test-1"
+    run_root.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_score_run(path: Path, scoring_model_id: str | None):
+        captured["scoring_model_id"] = scoring_model_id
+        return SimpleNamespace(output_root=path / "scoring" / "override-1.0")
+
+    monkeypatch.setattr("llm_behavior_lab.main.score_run", fake_score_run)
+
+    main(
+        [
+            "scale-score",
+            "--project-root",
+            str(tmp_path),
+            "--experiment-id",
+            "pilot-study-two",
+            "--scoring-model-id",
+            "override",
+        ]
+    )
+
+    assert captured["scoring_model_id"] == "override"
+
+
+def test_scale_design_rejects_unknown_scoring_model(tmp_path: Path) -> None:
+    with pytest.raises(
+        ValueError,
+        match="unknown scoring model 'missing' for bfi_10",
+    ):
+        main(
+            [
+                "scale-design",
+                "--project-root",
+                str(tmp_path),
+                "--experiment-id",
+                "pilot-study-three",
+                "--questionnaire",
+                "bfi_10",
+                "--scoring-model-id",
+                "missing",
+            ]
+        )

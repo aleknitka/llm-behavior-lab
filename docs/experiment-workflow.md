@@ -24,6 +24,11 @@ uv run llm-behavior-lab scale-design \
 protocol settings, model settings, seed, and scoring-model choice. It intentionally
 does not contain an API key.
 
+`--scoring-model-id` is optional. When supplied, `scale-design` validates that the
+questionnaire exposes that model. When omitted, `scale-score` uses the first
+executable scoring model in the snapshotted questionnaire. A later
+`scale-score --scoring-model-id ...` explicitly overrides the design choice.
+
 For target-dependent questionnaires, repeat `--questionnaire-param KEY=VALUE`:
 
 ```bash
@@ -62,8 +67,9 @@ uv run llm-behavior-lab scale-run --experiment-id pilot-study-one
 
 `scale-run` loads `design.json` and `personas.jsonl`; it never samples personas. Each run
 gets a new timestamped directory and snapshots the questionnaire as `scale.json`.
-Every item response stores the prompt, typed answer, raw response, provider metadata,
-seed, status, and protocol assignment metadata when applicable.
+Every item response stores the prompt, typed answer, raw response, seed, status, and
+protocol assignment metadata when applicable. Provider and model settings are
+snapshotted once in `run.jsonl`.
 
 If execution fails before a complete run is written, retain the partial files for
 diagnosis. Current staged execution does not resume partial runs; run the command
@@ -90,6 +96,8 @@ manifest stores both definition digests and whether fallback occurred.
 
 Scoring is strict: a scale with any missing, failed, invalid, or unsupported mapped
 answer is written as `unscorable`; other scales for that subject are still evaluated.
+If the questionnaire has no executable scoring model, the command exits with a clear
+validation error instead of creating partial scoring output.
 
 ## 5. Results
 
