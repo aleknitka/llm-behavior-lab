@@ -18,11 +18,22 @@ from llm_behavior_lab.personas.factory import (
     PersonaGenerationConfig,
     RequestedDemographicField,
 )
+from llm_behavior_lab.personas.value_specs import (
+    PersonaFieldValue,
+    RandUniformRange,
+    stable_random,
+)
+
+_RANGE_FACTOR_FIELDS = {
+    RequestedDemographicField.AGE,
+    RequestedDemographicField.HOUSEHOLD_SIZE,
+    RequestedDemographicField.NUMBER_OF_DEPENDANTS,
+}
 
 
 class ProtocolFactorLevel(BaseModel):
     id: str = Field(min_length=1)
-    value: Any
+    value: PersonaFieldValue
     label: str | None = None
 
 
@@ -38,11 +49,14 @@ class ProtocolFactor(BaseModel):
             msg = f"factor {self.name!r} has duplicate level ids"
             raise ValueError(msg)
         for level in self.levels:
-            try:
-                Demographics(**{self.field.value: level.value})
-            except ValueError as exc:
-                msg = f"{self.field.value} has unsupported value {level.value!r}"
-                raise ValueError(msg) from exc
+            if isinstance(level.value, RandUniformRange):
+                if self.field not in _RANGE_FACTOR_FIELDS:
+                    msg = f"{self.field.value} does not support range generators"
+                    raise ValueError(msg)
+                _validate_factor_value(self.field, level.value.left)
+                _validate_factor_value(self.field, level.value.right)
+            else:
+                _validate_factor_value(self.field, level.value)
         return self
 
 
@@ -75,6 +89,14 @@ class ExperimentProtocol(BaseModel):
         if missing_fields:
             msg = f"factor fields must be requested: {', '.join(missing_fields)}"
             raise ValueError(msg)
+
+        configured_values = self.base_persona_config.field_values.values()
+        factor_values = (level.value for factor in self.factors for level in factor.levels)
+        if self.seed is None and any(
+            isinstance(value, RandUniformRange)
+            for value in itertools.chain(configured_values, factor_values)
+        ):
+            raise ValueError("seed is required when protocol values contain a generator")
         return self
 
 
@@ -103,14 +125,22 @@ def expand_protocol_personas(protocol: ExperimentProtocol, experiment_id: str) -
     assignments: list[ProtocolAssignment] = []
     for base_persona in base_personas.personas:
         base_features = base_persona.features
-        for condition_id, factor_values, factor_level_ids in _condition_grid(protocol.factors):
-            manipulated_features = Demographics.model_validate(
-                {
-                    **base_features.model_dump(mode="json", exclude_none=True),
-                    **factor_values,
-                }
-            )
+        for condition_id, levels in _condition_grid(protocol.factors):
+            factor_level_ids = {factor.field.value: level.id for factor, level in levels}
             for iteration_index in range(1, protocol.iterations + 1):
+                factor_values = _resolve_factor_values(
+                    protocol=protocol,
+                    experiment_id=experiment_id,
+                    base_subject_id=str(base_persona.subject_id),
+                    levels=levels,
+                    iteration_index=iteration_index,
+                )
+                manipulated_features = Demographics.model_validate(
+                    {
+                        **base_features.model_dump(mode="json", exclude_none=True),
+                        **factor_values,
+                    }
+                )
                 subject_id = _expanded_subject_id(
                     experiment_id=experiment_id,
                     base_subject_id=str(base_persona.subject_id),
@@ -189,18 +219,44 @@ def _create_base_personas(
 
 def _condition_grid(
     factors: list[ProtocolFactor],
-) -> list[tuple[str, dict[str, Any], dict[str, str]]]:
-    conditions: list[tuple[str, dict[str, Any], dict[str, str]]] = []
+) -> list[tuple[str, tuple[tuple[ProtocolFactor, ProtocolFactorLevel], ...]]]:
+    conditions = []
     for levels in itertools.product(*(factor.levels for factor in factors)):
         condition_parts = []
-        factor_values: dict[str, Any] = {}
-        factor_level_ids: dict[str, str] = {}
+        selected_levels = []
         for factor, level in zip(factors, levels, strict=True):
             condition_parts.append(f"{factor.name}-{level.id}")
-            factor_values[factor.field.value] = level.value
-            factor_level_ids[factor.field.value] = level.id
-        conditions.append(("__".join(condition_parts), factor_values, factor_level_ids))
+            selected_levels.append((factor, level))
+        conditions.append(("__".join(condition_parts), tuple(selected_levels)))
     return conditions
+
+
+def _resolve_factor_values(
+    protocol: ExperimentProtocol,
+    experiment_id: str,
+    base_subject_id: str,
+    levels: tuple[tuple[ProtocolFactor, ProtocolFactorLevel], ...],
+    iteration_index: int,
+) -> dict[str, Any]:
+    factor_values: dict[str, Any] = {}
+    for factor, level in levels:
+        value = level.value
+        if isinstance(value, RandUniformRange):
+            if protocol.seed is None:
+                raise ValueError("seed is required when protocol values contain a generator")
+            value = value.sample(
+                stable_random(
+                    protocol.seed,
+                    experiment_id,
+                    base_subject_id,
+                    factor.name,
+                    factor.field.value,
+                    level.id,
+                    iteration_index,
+                )
+            )
+        factor_values[factor.field.value] = value
+    return factor_values
 
 
 def _expanded_subject_id(
@@ -218,3 +274,11 @@ def _json_value(value: Any) -> Any:
     if hasattr(value, "value"):
         return value.value
     return value
+
+
+def _validate_factor_value(field: RequestedDemographicField, value: Any) -> None:
+    try:
+        Demographics.model_validate({field.value: value})
+    except ValueError as exc:
+        msg = f"{field.value} has unsupported value {value!r}"
+        raise ValueError(msg) from exc
