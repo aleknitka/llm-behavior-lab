@@ -54,6 +54,48 @@ def test_score_run_writes_scores_reliability_and_manifest(tmp_path: Path) -> Non
     assert manifest["scoring_model_id"] == "default"
 
 
+def test_score_run_writes_overall_and_condition_reliability(tmp_path: Path) -> None:
+    run_root = tmp_path / "run-bfi10-model-20260608120000"
+    responses_root = run_root / "responses"
+    responses_root.mkdir(parents=True)
+    (run_root / "scale.json").write_text(BFI_10.model_dump_json(indent=2))
+    for subject_index, condition_id in enumerate(["younger", "older"], start=1):
+        records = [
+            ItemResponseRecord(
+                subject_id=f"subject-{subject_index}",
+                session_id="session-1",
+                run_id=run_root.name,
+                questionnaire_id=BFI_10.id,
+                questionnaire_version=BFI_10.version,
+                item_id=item.id,
+                item_order=item.order,
+                item_text=item.text,
+                response_format_type="likert",
+                messages=[],
+                answer=LikertAnswerValue(value=subject_index),
+                raw_response=str(subject_index),
+                status=ResponseStatus.COMPLETED,
+                metadata={
+                    "experiment_id": "pilot-study-one",
+                    "condition_id": condition_id,
+                },
+            )
+            for item in BFI_10.items
+        ]
+        (responses_root / f"subject-{subject_index}.jsonl").write_text(
+            "".join(record.model_dump_json() + "\n" for record in records)
+        )
+
+    result = score_run(run_root)
+
+    reliability_conditions = [
+        record.metadata.get("condition_id") for record in result.reliability
+    ]
+    assert reliability_conditions.count(None) == len(BFI_10.scales)
+    assert reliability_conditions.count("younger") == len(BFI_10.scales)
+    assert reliability_conditions.count("older") == len(BFI_10.scales)
+
+
 def test_score_run_uses_validated_current_definition_for_legacy_snapshot(
     tmp_path: Path,
 ) -> None:

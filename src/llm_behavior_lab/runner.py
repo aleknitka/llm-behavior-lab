@@ -391,10 +391,13 @@ def run_questionnaire(
         try:
             result = client.complete(messages, call_settings, allowed_answer_ids)
         except Exception as exc:
-            logger.exception(
-                "Provider call failed item_id={item_id} run_id={run_id}",
+            logger.warning(
+                "Provider call failed item_id={item_id} run_id={run_id} "
+                "error_type={error_type} error={error}",
                 item_id=item.id,
                 run_id=resolved_run_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
             )
             result = LlmQuestionResult(error=str(exc))
 
@@ -419,10 +422,10 @@ def run_questionnaire(
             status=record.status,
         )
 
-        if bool(questionnaire.metadata.get("retain_history", True)):
+        if result.error is None and bool(questionnaire.metadata.get("retain_history", True)):
             history = [
                 *messages,
-                {"role": "assistant", "content": result.raw_response or result.error or ""},
+                {"role": "assistant", "content": result.raw_response or ""},
             ]
 
     completed_at = datetime.now(UTC)
@@ -935,10 +938,13 @@ async def run_questionnaire_async(
         try:
             result = await client.complete(messages, call_settings, allowed_answer_ids)
         except Exception as exc:
-            logger.exception(
-                "Async provider call failed item_id={item_id} run_id={run_id}",
+            logger.warning(
+                "Async provider call failed item_id={item_id} run_id={run_id} "
+                "error_type={error_type} error={error}",
                 item_id=item.id,
                 run_id=resolved_run_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
             )
             result = LlmQuestionResult(error=str(exc))
 
@@ -963,10 +969,10 @@ async def run_questionnaire_async(
             status=record.status,
         )
 
-        if bool(questionnaire.metadata.get("retain_history", True)):
+        if result.error is None and bool(questionnaire.metadata.get("retain_history", True)):
             history = [
                 *messages,
-                {"role": "assistant", "content": result.raw_response or result.error or ""},
+                {"role": "assistant", "content": result.raw_response or ""},
             ]
 
     completed_at = datetime.now(UTC)

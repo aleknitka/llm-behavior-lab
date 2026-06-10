@@ -2,6 +2,7 @@ import json
 from collections.abc import Sequence
 
 import pytest
+from loguru import logger
 
 from llm_behavior_lab.models import LlmQuestionResult, ModelSettings, Persona, ProviderCapabilities
 from llm_behavior_lab.questionnaires.base.scale import Questionnaire
@@ -141,12 +142,16 @@ def test_run_questionnaire_sets_and_persists_seed_for_each_item(tmp_path) -> Non
 
 
 class FailingSyncClient:
+    def __init__(self) -> None:
+        self.calls: list[list[dict[str, str]]] = []
+
     def complete(
         self,
         messages: Sequence[dict[str, str]],
         settings: ModelSettings,
         allowed_answer_ids: Sequence[str],
     ) -> LlmQuestionResult:
+        self.calls.append(list(messages))
         raise RuntimeError("provider unavailable")
 
 
@@ -183,6 +188,41 @@ def test_run_questionnaire_saves_failure_records(tmp_path) -> None:
     run_row = json.loads((response_path.parents[1] / "run.jsonl").read_text(encoding="utf-8"))
     assert run_row["status"] == ResponseStatus.FAILED
     assert run_row["error_count"] == len(BFI_10.items)
+
+
+def test_run_questionnaire_keeps_provider_failures_out_of_history_and_logs(
+    tmp_path,
+) -> None:
+    messages: list[str] = []
+    handler_id = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    client = FailingSyncClient()
+    settings = ModelSettings(
+        model="llama3.1",
+        provider_base_url="http://localhost:11434/v1",
+        temperature=0.2,
+        timeout_seconds=60.0,
+    )
+
+    try:
+        run_questionnaire(
+            persona=TEST_PERSONA,
+            questionnaire=BFI_10,
+            settings=settings,
+            client=client,
+            project_root=tmp_path,
+            experiment_id="pilot-study-one",
+        )
+    finally:
+        logger.remove(handler_id)
+
+    assert len(client.calls[1]) == len(client.calls[0])
+    assert all(
+        message["content"] != "provider unavailable"
+        for call in client.calls
+        for message in call
+    )
+    assert "Provider call failed" in "\n".join(messages)
+    assert "Traceback" not in "\n".join(messages)
 
 
 class FakeAsyncClient:
