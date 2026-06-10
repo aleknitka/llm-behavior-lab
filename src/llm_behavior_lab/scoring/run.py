@@ -133,7 +133,15 @@ def _reliability_records(scores: list[ScaleScoreRecord]) -> list[ScaleReliabilit
                 grouped[key][score.subject_id][item.item_id] = item.keyed_value
 
     output: list[ScaleReliabilityRecord] = []
-    for key, item_values in sorted(grouped.items()):
+    sorted_groups = sorted(
+        grouped.items(),
+        key=lambda entry: (
+            entry[0][0],
+            entry[0][1] is not None,
+            entry[0][1] or "",
+        ),
+    )
+    for key, item_values in sorted_groups:
         scale_id, condition_id = key
         exemplar = exemplars[key]
         metadata: dict[str, object] = (
