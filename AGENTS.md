@@ -222,9 +222,8 @@ Runtime response data should use the Pydantic models in `src/llm_behavior_lab/re
   resumption.
 - Questionnaire batches and mixed protocol runs do not yet provide general
   item-level resume, retry backoff, or distributed execution.
-- Tracing, post-subject extraction, research-quality diagnostics, normalized
-  JSON snapshot storage, and multi-model benchmark orchestration remain proposed
-  work under `feats/`.
+- Tracing, post-subject extraction, research-quality diagnostics, and
+  multi-model benchmark orchestration remain proposed work under `feats/`.
 
 ## Testing
 
