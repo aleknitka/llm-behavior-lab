@@ -10,6 +10,7 @@ from llm_behavior_lab.questionnaires.catalog import (
     resolve_questionnaire,
 )
 from llm_behavior_lab.responses.base import ItemResponseRecord
+from llm_behavior_lab.responses.item_ledgers import latest_item_attempts
 from llm_behavior_lab.scoring.engine import score_records
 from llm_behavior_lab.scoring.models import (
     ScaleReliabilityRecord,
@@ -111,7 +112,7 @@ def _load_response_records(path: Path) -> list[ItemResponseRecord]:
         for line in response_path.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 records.append(ItemResponseRecord.model_validate_json(line))
-    return records
+    return latest_item_attempts(records)
 
 
 def _reliability_records(scores: list[ScaleScoreRecord]) -> list[ScaleReliabilityRecord]:

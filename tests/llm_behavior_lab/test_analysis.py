@@ -140,6 +140,40 @@ def test_load_response_table_accepts_run_directory(tmp_path) -> None:
     assert len(load_response_table(run_root)) == 1
 
 
+def test_load_response_table_uses_latest_item_attempt(tmp_path) -> None:
+    responses_root = tmp_path / "run-bfi10-model-20260603120000" / "responses"
+    failed = ItemResponseRecord(
+        subject_id="subject-1",
+        session_id="session-1",
+        run_id="run-bfi10-model-20260603120000",
+        questionnaire_id="bfi_10",
+        questionnaire_version="1.0",
+        item_id="bfi10_01_reserved",
+        item_order=1,
+        item_text="Question",
+        response_format_type="likert",
+        messages=[],
+        status=ResponseStatus.FAILED,
+        error="provider unavailable",
+    )
+    completed = failed.model_copy(
+        update={
+            "answer": LikertAnswerValue(value=2, label="Agree"),
+            "raw_response": "2",
+            "status": ResponseStatus.COMPLETED,
+            "error": None,
+        }
+    )
+    _write_response(responses_root / "subject-1.jsonl", failed)
+    _write_response(responses_root / "subject-1.jsonl", completed)
+
+    rows = load_response_table(responses_root)
+
+    assert len(rows) == 1
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["answer_value"] == 2
+
+
 def test_load_response_table_joins_persona_features_by_subject_id(tmp_path) -> None:
     experiment_root = tmp_path / "experiments" / "join-study-one"
     run_root = experiment_root / "run-bfi10-model-20260603120000"

@@ -220,8 +220,10 @@ Runtime response data should use the Pydantic models in `src/llm_behavior_lab/re
 - Protocols currently use one shared provider/model configuration.
 - Behavioral-task batches support bounded cross-subject concurrency and explicit
   resumption.
-- Questionnaire batches and mixed protocol runs do not yet provide general
-  item-level resume, retry backoff, or distributed execution.
+- Questionnaire batches and mixed protocol runs support bounded cross-subject
+  concurrency, explicit item-level resumption, opt-in failed-item retries, and
+  provider retry backoff.
+- Distributed execution is not supported.
 - Tracing, post-subject extraction, research-quality diagnostics, normalized
   JSON snapshot storage, and multi-model benchmark orchestration remain proposed
   work under `feats/`.

@@ -97,7 +97,7 @@ def test_model_settings_reject_invalid_execution_policy(
     field: str,
     value: int | float,
 ) -> None:
-    values = {
+    values: dict[str, object] = {
         "model": "test",
         "provider_base_url": "http://localhost",
         "temperature": 0,
@@ -106,4 +106,4 @@ def test_model_settings_reject_invalid_execution_policy(
     }
 
     with pytest.raises(ValidationError):
-        ModelSettings(**values)
+        ModelSettings.model_validate(values)

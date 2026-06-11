@@ -131,12 +131,14 @@ def test_provider_snapshot_rejects_invalid_execution_policy(
     value: int | float,
 ) -> None:
     with pytest.raises(ValidationError):
-        ProviderSnapshot(
-            provider_base_url="http://localhost",
-            model="test",
-            temperature=0,
-            timeout_seconds=10,
-            **{field: value},
+        ProviderSnapshot.model_validate(
+            {
+                "provider_base_url": "http://localhost",
+                "model": "test",
+                "temperature": 0,
+                "timeout_seconds": 10,
+                field: value,
+            }
         )
 
 

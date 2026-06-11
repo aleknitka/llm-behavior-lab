@@ -91,10 +91,12 @@ def test_provider_design_rejects_invalid_execution_policy(
     value: int | float,
 ) -> None:
     with pytest.raises(ValueError):
-        ProviderDesign(
-            model="test-model",
-            base_url="http://localhost:1234/v1",
-            **{field: value},
+        ProviderDesign.model_validate(
+            {
+                "model": "test-model",
+                "base_url": "http://localhost:1234/v1",
+                field: value,
+            }
         )
 
 
