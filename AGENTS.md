@@ -10,15 +10,19 @@ intended to support multiple standardized questionnaires, behavioral tasks,
 extensible persona feature maps, and experimental designs that compare how
 selected persona parameters influence simulated responses and decisions.
 
-The app should allow a user to:
+The app allows a user to:
 
 1. Create a persona from demographic inputs selected from a map of available features.
 2. Ask an OpenAI-compatible LLM to assume that persona.
-3. Optionally expand generated personas through paired or factorial protocol designs
-   that manipulate selected fields while keeping the remaining base persona stable.
-4. Run a questionnaire or a multi-trial behavioral task while retaining the
-   appropriate interaction history.
-5. Save item or trial data in JSONL format for later analysis.
+3. Optionally expand generated personas through paired or factorial designs that
+   manipulate selected fields while keeping the remaining base persona stable.
+4. Store an immutable canonical experiment protocol with ordered questionnaire
+   and behavioral-task steps.
+5. Reuse an exact persona cohort or create a new versioned cohort from a different
+   persona seed.
+6. Run steps with explicit reset or inherited conversation history.
+7. Score questionnaire runs, analyze behavioral-task runs, and export derived
+   tables without changing canonical response ledgers.
 
 ## Development Approach
 
@@ -54,21 +58,45 @@ The app should allow a user to:
 
 ## Core Workflow
 
-The standard workflow is:
+The canonical workflow is:
 
-1. Load a map of demographic persona features.
-2. Let the user select or define demographic inputs.
-3. Render a persona prompt from those inputs.
-4. Ask the LLM to assume the persona.
-5. Optionally expand base personas into protocol conditions and iterations for parameter-comparison designs.
-6. Load one questionnaire definition or one behavioral task definition.
-7. Ask questionnaire items or repeatedly present task observations.
-8. Retain prior context requested by the procedure.
-9. For tasks, validate the selected action and apply the deterministic
+1. Validate one `UnifiedExperimentProtocol`.
+2. Persist the immutable `protocol.json`.
+3. Create or select an immutable persona cohort.
+4. Resolve any paired or factorial persona assignments before provider calls.
+5. Create a distinct timestamped protocol run.
+6. Execute ordered questionnaire or behavioral-task steps.
+7. Reset or inherit history according to each step's `history` field.
+8. For tasks, validate the selected action and apply the deterministic
    environment transition before revealing feedback.
-10. Capture model output, structured output if available, logprobs if available,
-    and relevant metadata.
-11. Append item or trial records to JSONL for later analysis.
+9. Capture model output, structured output if available, logprobs if available,
+   and relevant metadata.
+10. Append item or trial records to JSONL and write run-level protocol metadata.
+11. Score or analyze individual step directories.
+
+The staged `design.json` workflow remains supported for existing
+single-procedure experiments and legacy factor-only protocols.
+
+## Protocol and Cohort Format
+
+Canonical protocol models live in `src/llm_behavior_lab/protocols.py`; protocol
+creation and execution live in `src/llm_behavior_lab/protocol_runs.py`.
+
+- `UnifiedExperimentProtocol` is the source of truth for new experiments.
+- Provider configuration is shared by protocol steps and must never contain
+  credentials.
+- `persona_seed` and `run_seed` are overridable defaults and are excluded from
+  protocol identity.
+- All other protocol fields contribute to the protocol fingerprint.
+- Reusing an experiment ID with a changed non-seed configuration must fail and
+  require a new experiment ID.
+- Cohorts are immutable and stored under `cohorts/cohort-[uuid]/`.
+- Reusing `cohort_id` must load the exact persisted personas and cohort metadata.
+- Creating a cohort with a new persona seed must not overwrite previous cohorts.
+- Questionnaire and task steps have stable IDs and ordered execution.
+- Step history is explicitly `reset` or `inherit`.
+- Legacy `design.json` and factor-only `protocol.json` files remain readable
+  through compatibility loaders.
 
 ## Behavioral Task Format
 
@@ -89,6 +117,8 @@ Stateful tasks live under `src/llm_behavior_lab/behavioral_tasks/`.
   requested; preserve the prior attempt records when retrying.
 - Keep trials sequential within one subject; bounded concurrency may be used
   across subjects.
+- Protocol task steps must keep schedules, responses, and conversations inside
+  their `steps/{step_id}/` directory.
 - Do not interpret provider latency as human reaction time.
 
 ## Questionnaire Format
@@ -131,16 +161,32 @@ When coding a questionnaire:
 
 ## Persistence
 
-- Save questionnaire and behavioral-task run data as JSONL.
+- Save item, trial, conversation, run-index, and metadata ledgers as JSONL.
 - Each line should represent a clear analysis unit: one answered questionnaire
   item or one task trial with its attempts and deterministic transition.
 - Keep the JSONL schema stable and validate records with Pydantic before writing.
-- Do not duplicate full questionnaire definitions into every result line. Store questionnaire definitions in code under `src/llm_behavior_lab/questionnaires/`; store result lines with stable questionnaire, item, scale, model, prompt, persona, provider, and response identifiers or metadata needed for later analysis.
+- Do not duplicate full questionnaire definitions into every result line. Store
+  questionnaire definitions in code under
+  `src/llm_behavior_lab/questionnaires/`; store result lines with stable
+  questionnaire, item, scale, model, prompt, persona, provider, and response
+  identifiers or metadata needed for later analysis.
+- Treat `protocol.json` and cohort artifacts as immutable once created.
+- Every protocol run record must include the protocol fingerprint, cohort ID,
+  effective persona and run seeds, provider snapshot, and ordered step results.
+- Runtime provider credentials must never be persisted.
 - Scale runtime data is stored under
   `experiments/{experiment_id}/run-{questionnaire}-{model}-{timestamp}/`.
 - Behavioral-task runtime data is stored under
   `experiments/{experiment_id}/run-task-{task}-{model}-{timestamp}/`.
-- Experiment roots can also contain `personas.jsonl`, `metadata.jsonl`, and, for protocol runs, `protocol.json`, `base_personas.jsonl`, and `protocol_assignments.jsonl`.
+- Canonical protocol experiment roots contain `protocol.json`, `metadata.jsonl`,
+  immutable cohort directories, and timestamped protocol run directories.
+- Cohort directories contain `personas.jsonl`, `metadata.json`, and
+  `protocol-assignments.jsonl`.
+- Protocol runs are stored under
+  `run-protocol-{model}-{timestamp}/`, with procedure artifacts under
+  `steps/{step_id}/` and aggregate conversations under `conversations/`.
+- Legacy staged experiment roots can contain `design.json`, `personas.jsonl`,
+  `base_personas.jsonl`, and `protocol_assignments.jsonl`.
 - Experiment IDs must be exactly three lowercase letter-or-digit items separated by hyphens, such as `pilot-study-one`; reject spaces, underscores, dots, path separators, and other symbols.
 - Session IDs must be `session-[uuid]`.
 - Scale run directories contain `run.jsonl`, `scale.json`, and
@@ -159,15 +205,33 @@ Runtime response data should use the Pydantic models in `src/llm_behavior_lab/re
 - Use `ItemResponseRecord` for item-level JSONL analysis units: stable questionnaire and item IDs, item order/text, response format type, prompt messages, parsed answer, raw response, structured response, logprobs, status, errors, and metadata.
 - Use typed answer values instead of ad hoc nullable fields: `LikertAnswerValue`, `NumericAnswerValue`, `SingleChoiceAnswerValue`, `MultipleChoiceAnswerValue`, and `TextAnswerValue`.
 - Keep provider-specific or experiment-specific details inside explicit `metadata` fields unless they become stable first-class fields.
-- Do not add scoring outputs to response records until scoring is implemented against questionnaire `scales` and `scoring_models`.
+- Keep scoring outputs as derived artifacts under `scoring/`; do not add them to
+  canonical item response records.
 - Use `TaskTrialRecord` for task attempts, observations, transitions, message
   indexes, status, errors, and task metadata.
+
+## Current Execution Boundaries
+
+- New multi-step studies should use `protocol-create`.
+- The first `protocol-create` call stores the protocol and initial cohort;
+  confirmed reruns execute the protocol.
+- Non-interactive reruns must pass `--new-run`.
+- `--cohort-id` and `--persona-seed` are mutually exclusive.
+- Protocols currently use one shared provider/model configuration.
+- Behavioral-task batches support bounded cross-subject concurrency and explicit
+  resumption.
+- Questionnaire batches and mixed protocol runs do not yet provide general
+  item-level resume, retry backoff, or distributed execution.
+- Tracing, post-subject extraction, research-quality diagnostics, normalized
+  JSON snapshot storage, and multi-model benchmark orchestration remain proposed
+  work under `feats/`.
 
 ## Testing
 
 - Add unit tests with `pytest` for data validation, questionnaire/task loading,
-  prompt masking, deterministic transitions, resume behavior, provider
-  capability handling, and JSONL serialization.
+  prompt masking, deterministic transitions, protocol identity, cohort reuse,
+  step history, resume behavior, provider capability handling, and JSONL
+  serialization.
 - Prefer tests that exercise behavior without requiring live model calls.
 - Mock or fake OpenAI-compatible API clients in unit tests.
 - Run `ruff`, `ty`, and `pytest` before claiming implementation work is complete.
