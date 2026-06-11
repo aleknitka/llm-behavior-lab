@@ -86,11 +86,12 @@ def resolve_experiment_paths(
     project_root: Path,
     experiment_id: str,
     run_id: str,
+    run_root_override: Path | None = None,
 ) -> ExperimentPaths:
     experiment_id = validate_experiment_id(experiment_id)
 
     experiment_root = project_root / "experiments" / experiment_id
-    run_root = experiment_root / run_id
+    run_root = run_root_override or experiment_root / run_id
     return ExperimentPaths(
         experiment_root=experiment_root,
         personas_path=experiment_root / "personas.jsonl",

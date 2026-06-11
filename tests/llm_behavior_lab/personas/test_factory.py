@@ -369,6 +369,24 @@ def test_field_value_configuration_rejects_invalid_inputs(
         PersonaFactoryRequest.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    "field_values",
+    [
+        {"age": 15, "number_of_dependants": 1},
+        {"age": 15, "has_children": True},
+        {"number_of_dependants": 2, "has_children": False},
+        {"number_of_dependants": 2, "household_size": 2},
+        {"age": 20, "education_level": "doctorate"},
+        {"age": 20, "employment_status": "retired"},
+    ],
+)
+def test_fixed_field_values_reject_impossible_demographic_combinations(
+    field_values: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="incompatible"):
+        PersonaGenerationConfig.model_validate({"field_values": field_values})
+
+
 def test_age_group_is_not_a_supported_requested_field() -> None:
     assert "age_group" not in {field.value for field in RequestedDemographicField}
 

@@ -44,7 +44,7 @@ class RunRecord(BaseModel):
     run_id: str
     subject_ids: list[str]
     persona_count: int = Field(ge=1)
-    procedure_kind: Literal["scale", "task", "pairwise"] = "scale"
+    procedure_kind: Literal["scale", "task", "pairwise", "protocol"] = "scale"
     procedure_id: str | None = None
     procedure_version: str | None = None
     questionnaire_id: str | None = None

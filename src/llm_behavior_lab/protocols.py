@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import json
 import random
-from typing import Any, Literal
+from pathlib import Path
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from llm_behavior_lab.personas.dimensions import Demographics
 from llm_behavior_lab.personas.factory import (
@@ -29,6 +31,111 @@ _RANGE_FACTOR_FIELDS = {
     RequestedDemographicField.HOUSEHOLD_SIZE,
     RequestedDemographicField.NUMBER_OF_DEPENDANTS,
 }
+
+
+class ProtocolProvider(BaseModel):
+    """Shared non-secret provider settings for one experiment protocol."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    temperature: float = 0.0
+    timeout_seconds: float = Field(default=60.0, gt=0)
+    supports_structured_outputs: bool = False
+    supports_logprobs: bool = True
+
+
+class ProtocolQuestionnaireStep(BaseModel):
+    """One questionnaire step in an ordered protocol."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    kind: Literal["questionnaire"] = "questionnaire"
+    questionnaire_id: str = Field(min_length=1)
+    questionnaire_parameters: dict[str, str] = Field(default_factory=dict)
+    scoring_model_id: str | None = None
+    context: str | None = None
+    history: Literal["reset", "inherit"] = "reset"
+
+
+class ProtocolTaskStep(BaseModel):
+    """One stateful behavioral-task step in an ordered protocol."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    kind: Literal["task"] = "task"
+    task_id: str = Field(min_length=1)
+    task_config: dict[str, Any] = Field(default_factory=dict)
+    history: Literal["reset", "inherit"] = "reset"
+
+
+ProtocolStep = Annotated[
+    ProtocolQuestionnaireStep | ProtocolTaskStep,
+    Field(discriminator="kind"),
+]
+
+
+class ProtocolPersonaDesign(BaseModel):
+    """Persona cohort inputs, optionally expanded through a factorial design."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = Field(default=100, ge=1)
+    requested_fields: set[RequestedDemographicField] = Field(
+        default_factory=lambda: set(RequestedDemographicField),
+        min_length=1,
+    )
+    generation_config: PersonaGenerationConfig = Field(default_factory=PersonaGenerationConfig)
+    factorial: ExperimentProtocol | None = None
+
+    @model_validator(mode="after")
+    def validate_personas(self) -> ProtocolPersonaDesign:
+        PersonaFactoryRequest(
+            count=self.count,
+            requested_fields=self.requested_fields,
+            seed=0,
+            generation_config=self.generation_config,
+        )
+        return self
+
+
+class UnifiedExperimentProtocol(BaseModel):
+    """Canonical immutable configuration for a multi-step experiment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: str = "1.0"
+    experiment_id: str
+    name: str = Field(min_length=1)
+    persona_seed: int | None = None
+    run_seed: int | None = None
+    personas: ProtocolPersonaDesign
+    provider: ProtocolProvider
+    steps: list[ProtocolStep] = Field(min_length=1)
+
+    @field_validator("experiment_id")
+    @classmethod
+    def validate_experiment_id(cls, value: str) -> str:
+        from llm_behavior_lab.storage import validate_experiment_id
+
+        return validate_experiment_id(value)
+
+    @model_validator(mode="after")
+    def validate_steps(self) -> UnifiedExperimentProtocol:
+        step_ids = [step.id for step in self.steps]
+        if len(step_ids) != len(set(step_ids)):
+            raise ValueError("protocol has duplicate step ids")
+        return self
+
+
+class CompatibleProtocol(BaseModel):
+    """Validated protocol payload plus the format used to load it."""
+
+    source: Literal["protocol.json", "factor_protocol"]
+    protocol: UnifiedExperimentProtocol | ExperimentProtocol
 
 
 class ProtocolFactorLevel(BaseModel):
@@ -282,3 +389,32 @@ def _validate_factor_value(field: RequestedDemographicField, value: Any) -> None
     except ValueError as exc:
         msg = f"{field.value} has unsupported value {value!r}"
         raise ValueError(msg) from exc
+
+
+def protocol_fingerprint(protocol: UnifiedExperimentProtocol) -> str:
+    """Hash protocol identity while allowing run and persona seed overrides."""
+    payload = protocol.model_dump(mode="json", exclude={"persona_seed", "run_seed"})
+    factorial = payload.get("personas", {}).get("factorial")
+    if isinstance(factorial, dict):
+        factorial.pop("seed", None)
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def load_compatible_protocol(path: Path) -> CompatibleProtocol:
+    """Load a canonical protocol or a legacy factor-only protocol file."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if "experiment_id" in payload and "steps" in payload:
+        return CompatibleProtocol(
+            source="protocol.json",
+            protocol=UnifiedExperimentProtocol.model_validate(payload),
+        )
+    return CompatibleProtocol(
+        source="factor_protocol",
+        protocol=ExperimentProtocol.model_validate(payload),
+    )
+
+
+ProtocolPersonaDesign.model_rebuild()
+UnifiedExperimentProtocol.model_rebuild()
+CompatibleProtocol.model_rebuild()

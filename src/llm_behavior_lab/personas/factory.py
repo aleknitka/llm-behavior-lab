@@ -63,7 +63,7 @@ class PersonaBatch(BaseModel):
         return len(self.personas)
 
 
-_WEIGHTED_FIELD_ENUMS: dict[RequestedDemographicField, type[StrEnum]] = {
+PERSONA_ENUM_FIELDS: dict[RequestedDemographicField, type[StrEnum]] = {
     RequestedDemographicField.GENDER: Gender,
     RequestedDemographicField.EDUCATION_LEVEL: EducationLevel,
     RequestedDemographicField.EMPLOYMENT_STATUS: EmploymentStatus,
@@ -73,7 +73,7 @@ _WEIGHTED_FIELD_ENUMS: dict[RequestedDemographicField, type[StrEnum]] = {
     RequestedDemographicField.FAMILY_STATUS: FamilyStatus,
 }
 
-_RANGE_FIELDS = {
+PERSONA_RANGE_FIELDS = {
     RequestedDemographicField.AGE,
     RequestedDemographicField.HOUSEHOLD_SIZE,
     RequestedDemographicField.NUMBER_OF_DEPENDANTS,
@@ -95,18 +95,20 @@ class PersonaGenerationConfig(BaseModel):
             msg = f"fields cannot define both values and probabilities: {', '.join(conflicts)}"
             raise ValueError(msg)
 
+        fixed_values: dict[RequestedDemographicField, Any] = {}
         for field, value in self.field_values.items():
             if isinstance(value, RandUniformRange):
-                if field not in _RANGE_FIELDS:
+                if field not in PERSONA_RANGE_FIELDS:
                     msg = f"{field.value} does not support range generators"
                     raise ValueError(msg)
                 _validate_demographic_value(field, value.left)
                 _validate_demographic_value(field, value.right)
             else:
-                _validate_demographic_value(field, value)
+                fixed_values[field] = _validate_demographic_value(field, value)
+        _validate_fixed_demographic_combinations(fixed_values)
 
         for field, probabilities in self.field_probabilities.items():
-            enum_type = _WEIGHTED_FIELD_ENUMS.get(field)
+            enum_type = PERSONA_ENUM_FIELDS.get(field)
             if enum_type is None:
                 msg = f"{field.value} does not support weighted enum probabilities"
                 raise ValueError(msg)
@@ -446,3 +448,42 @@ def _validate_demographic_value(field: RequestedDemographicField, value: Any) ->
         msg = f"{field.value} has unsupported value {value!r}"
         raise ValueError(msg) from exc
     return getattr(demographics, field.value)
+
+
+def _validate_fixed_demographic_combinations(
+    values: dict[RequestedDemographicField, Any],
+) -> None:
+    age = values.get(RequestedDemographicField.AGE)
+    dependants = values.get(RequestedDemographicField.NUMBER_OF_DEPENDANTS)
+    has_children = values.get(RequestedDemographicField.HAS_CHILDREN)
+    household_size = values.get(RequestedDemographicField.HOUSEHOLD_SIZE)
+    education = values.get(RequestedDemographicField.EDUCATION_LEVEL)
+    employment = values.get(RequestedDemographicField.EMPLOYMENT_STATUS)
+
+    incompatible = False
+    if age is not None and age < 18:
+        incompatible = (
+            (dependants is not None and dependants > 0)
+            or has_children is True
+            or education
+            not in {None, EducationLevel.PRIMARY, EducationLevel.SECONDARY, EducationLevel.OTHER}
+            or employment
+            not in {
+                None,
+                EmploymentStatus.STUDENT,
+                EmploymentStatus.UNEMPLOYED,
+                EmploymentStatus.CAREGIVER,
+                EmploymentStatus.OTHER,
+            }
+        )
+    if age is not None and age < 25 and education is EducationLevel.DOCTORATE:
+        incompatible = True
+    if age is not None and age < 55 and employment is EmploymentStatus.RETIRED:
+        incompatible = True
+    if dependants is not None and has_children is not None:
+        incompatible = incompatible or has_children is not (dependants > 0)
+    if dependants is not None and household_size is not None:
+        incompatible = incompatible or household_size < 1 + dependants
+
+    if incompatible:
+        raise ValueError("configured field values are incompatible with demographic constraints")

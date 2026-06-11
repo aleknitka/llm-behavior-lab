@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from llm_behavior_lab.experiments import (
     ExperimentDesign,
     PersonaDesign,
@@ -8,10 +10,14 @@ from llm_behavior_lab.experiments import (
     ScaleProcedureDesign,
     TaskProcedureDesign,
     create_experiment_design,
+    create_personas,
+    list_persona_fields,
     load_experiment_design,
     load_personas,
     materialize_personas,
+    preview_persona_creation,
 )
+from llm_behavior_lab.personas.factory import RequestedDemographicField
 from llm_behavior_lab.protocols import ExperimentProtocol
 
 
@@ -56,6 +62,108 @@ def test_task_design_round_trip() -> None:
 
     assert design.procedure.kind == "task"
     assert design.procedure.task_config["trial_count"] == 20
+
+
+def test_create_personas_persists_and_returns_deterministic_batch(tmp_path: Path) -> None:
+    design = PersonaDesign(
+        count=2,
+        seed=7,
+        requested_fields={
+            RequestedDemographicField.AGE,
+            RequestedDemographicField.COUNTRY,
+        },
+    )
+
+    first = create_personas(tmp_path, "persona-study-one", design)
+    persisted = load_personas(tmp_path, "persona-study-one")
+
+    assert first == persisted
+    assert first.metadata.requested_fields == ["age", "country"]
+    assert (tmp_path / "experiments" / "persona-study-one" / "personas.jsonl").exists()
+
+
+def test_preview_persona_creation_resolves_defaults_without_writing(tmp_path: Path) -> None:
+    preview = preview_persona_creation(
+        experiment_id="preview-study-one",
+        design=PersonaDesign(
+            count=3,
+            seed=11,
+            requested_fields={RequestedDemographicField.AGE},
+        ),
+    )
+
+    assert preview.model_dump(mode="json") == {
+        "count": 3,
+        "requested_fields": ["age"],
+        "seed": 11,
+        "experiment_id": "preview-study-one",
+        "generation_config": {
+            "field_values": {},
+            "field_probabilities": {},
+        },
+    }
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_list_persona_fields_describes_supported_configuration() -> None:
+    fields = {descriptor.id: descriptor for descriptor in list_persona_fields()}
+
+    assert fields[RequestedDemographicField.AGE].value_type == "integer"
+    assert fields[RequestedDemographicField.AGE].supports_range is True
+    assert fields[RequestedDemographicField.GENDER].value_type == "enum"
+    assert fields[RequestedDemographicField.GENDER].allowed_values == [
+        "female",
+        "male",
+        "non_binary",
+    ]
+    assert fields[RequestedDemographicField.GENDER].supports_probabilities is True
+    assert fields[RequestedDemographicField.REGION].supports_probabilities is False
+
+
+def test_create_personas_refuses_overwrite_without_replace(tmp_path: Path) -> None:
+    design = PersonaDesign(
+        count=1,
+        seed=7,
+        requested_fields={RequestedDemographicField.AGE},
+    )
+    original = create_personas(tmp_path, "replace-study-one", design)
+
+    with pytest.raises(FileExistsError, match="personas already exist"):
+        create_personas(
+            tmp_path,
+            "replace-study-one",
+            PersonaDesign(
+                count=1,
+                seed=9,
+                requested_fields={RequestedDemographicField.AGE},
+            ),
+        )
+
+    replacement = create_personas(
+        tmp_path,
+        "replace-study-one",
+        PersonaDesign(
+            count=1,
+            seed=9,
+            requested_fields={RequestedDemographicField.AGE},
+        ),
+        replace=True,
+    )
+
+    assert replacement != original
+    assert load_personas(tmp_path, "replace-study-one") == replacement
+
+
+def test_persona_design_rejects_configuration_for_unrequested_field() -> None:
+    with pytest.raises(ValueError, match="configured fields must be requested"):
+        PersonaDesign.model_validate(
+            {
+                "requested_fields": ["age"],
+                "generation_config": {
+                    "field_values": {"country": "PL"},
+                },
+            }
+        )
 
 
 def test_persona_range_declaration_stays_in_design_and_materializes_to_integer(
