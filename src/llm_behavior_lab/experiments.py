@@ -3,6 +3,12 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from llm_behavior_lab.config import (
+    DEFAULT_INITIAL_BACKOFF_SECONDS,
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_BACKOFF_SECONDS,
+    DEFAULT_MAX_CONCURRENCY,
+)
 from llm_behavior_lab.personas.factory import (
     PERSONA_ENUM_FIELDS,
     PERSONA_RANGE_FIELDS,
@@ -66,6 +72,13 @@ class ProviderDesign(BaseModel):
     base_url: str
     temperature: float = 0.0
     timeout_seconds: float = 60.0
+    max_attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, ge=1)
+    initial_backoff_seconds: float = Field(
+        default=DEFAULT_INITIAL_BACKOFF_SECONDS,
+        ge=0,
+    )
+    max_backoff_seconds: float = Field(default=DEFAULT_MAX_BACKOFF_SECONDS, ge=0)
+    max_concurrency: int = Field(default=DEFAULT_MAX_CONCURRENCY, ge=1)
     seed: int | None = None
     supports_structured_outputs: bool = False
     supports_logprobs: bool = True

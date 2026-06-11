@@ -64,6 +64,40 @@ def test_task_design_round_trip() -> None:
     assert design.procedure.task_config["trial_count"] == 20
 
 
+def test_provider_design_round_trips_execution_policy() -> None:
+    provider = ProviderDesign(
+        model="test-model",
+        base_url="http://localhost:1234/v1",
+        max_attempts=5,
+        initial_backoff_seconds=0.5,
+        max_backoff_seconds=8,
+        max_concurrency=6,
+    )
+
+    assert ProviderDesign.model_validate(provider.model_dump()) == provider
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_attempts", 0),
+        ("initial_backoff_seconds", -0.1),
+        ("max_backoff_seconds", -0.1),
+        ("max_concurrency", 0),
+    ],
+)
+def test_provider_design_rejects_invalid_execution_policy(
+    field: str,
+    value: int | float,
+) -> None:
+    with pytest.raises(ValueError):
+        ProviderDesign(
+            model="test-model",
+            base_url="http://localhost:1234/v1",
+            **{field: value},
+        )
+
+
 def test_create_personas_persists_and_returns_deterministic_batch(tmp_path: Path) -> None:
     design = PersonaDesign(
         count=2,

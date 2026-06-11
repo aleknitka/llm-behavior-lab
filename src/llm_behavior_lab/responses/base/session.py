@@ -4,11 +4,20 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from llm_behavior_lab.config import (
+    DEFAULT_INITIAL_BACKOFF_SECONDS,
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_BACKOFF_SECONDS,
+    DEFAULT_MAX_CONCURRENCY,
+)
+
 
 class ResponseStatus(StrEnum):
     COMPLETED = "completed"
     INVALID = "invalid"
     FAILED = "failed"
+    PARTIAL = "partial"
+    CANCELLED = "cancelled"
     SKIPPED = "skipped"
 
 
@@ -19,6 +28,13 @@ class ProviderSnapshot(BaseModel):
     model: str
     temperature: float
     timeout_seconds: float
+    max_attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, ge=1)
+    initial_backoff_seconds: float = Field(
+        default=DEFAULT_INITIAL_BACKOFF_SECONDS,
+        ge=0,
+    )
+    max_backoff_seconds: float = Field(default=DEFAULT_MAX_BACKOFF_SECONDS, ge=0)
+    max_concurrency: int = Field(default=DEFAULT_MAX_CONCURRENCY, ge=1)
     supports_structured_outputs: bool = False
     supports_logprobs: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)

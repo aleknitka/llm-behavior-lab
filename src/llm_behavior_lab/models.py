@@ -2,6 +2,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from llm_behavior_lab.config import (
+    DEFAULT_INITIAL_BACKOFF_SECONDS,
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_BACKOFF_SECONDS,
+    DEFAULT_MAX_CONCURRENCY,
+)
+
 
 class AllowedAnswer(BaseModel):
     answer_id: str
@@ -41,6 +48,13 @@ class ModelSettings(BaseModel):
     provider_base_url: str
     temperature: float
     timeout_seconds: float
+    max_attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, ge=1)
+    initial_backoff_seconds: float = Field(
+        default=DEFAULT_INITIAL_BACKOFF_SECONDS,
+        ge=0,
+    )
+    max_backoff_seconds: float = Field(default=DEFAULT_MAX_BACKOFF_SECONDS, ge=0)
+    max_concurrency: int = Field(default=DEFAULT_MAX_CONCURRENCY, ge=1)
     seed: int | None = None
     capabilities: ProviderCapabilities = Field(default_factory=ProviderCapabilities)
 

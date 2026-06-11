@@ -4,6 +4,7 @@ from pydantic import ValidationError
 from llm_behavior_lab.models import (
     AllowedAnswer,
     JsonlQuestionRecord,
+    ModelSettings,
     Persona,
     ProviderCapabilities,
     Questionnaire,
@@ -63,3 +64,46 @@ def test_provider_capabilities_defaults_to_local_safe_behavior() -> None:
 
     assert capabilities.supports_structured_outputs is False
     assert capabilities.supports_logprobs is False
+
+
+def test_model_settings_validate_execution_policy() -> None:
+    settings = ModelSettings(
+        model="test",
+        provider_base_url="http://localhost",
+        temperature=0,
+        timeout_seconds=10,
+        max_attempts=4,
+        initial_backoff_seconds=0.25,
+        max_backoff_seconds=4,
+        max_concurrency=8,
+    )
+
+    assert settings.max_attempts == 4
+    assert settings.initial_backoff_seconds == 0.25
+    assert settings.max_backoff_seconds == 4
+    assert settings.max_concurrency == 8
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_attempts", 0),
+        ("initial_backoff_seconds", -0.1),
+        ("max_backoff_seconds", -0.1),
+        ("max_concurrency", 0),
+    ],
+)
+def test_model_settings_reject_invalid_execution_policy(
+    field: str,
+    value: int | float,
+) -> None:
+    values = {
+        "model": "test",
+        "provider_base_url": "http://localhost",
+        "temperature": 0,
+        "timeout_seconds": 10,
+        field: value,
+    }
+
+    with pytest.raises(ValidationError):
+        ModelSettings(**values)

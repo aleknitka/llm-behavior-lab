@@ -89,6 +89,49 @@ def test_unified_protocol_round_trips_ordered_mixed_steps() -> None:
     assert [step.id for step in loaded.steps] == ["personality", "decision-task"]
 
 
+def test_protocol_provider_round_trips_execution_policy() -> None:
+    protocol = _protocol(
+        provider={
+            "model": "test-model",
+            "base_url": "http://localhost:1234/v1",
+            "max_attempts": 5,
+            "initial_backoff_seconds": 0.5,
+            "max_backoff_seconds": 8,
+            "max_concurrency": 6,
+        }
+    )
+
+    loaded = UnifiedExperimentProtocol.model_validate_json(protocol.model_dump_json())
+
+    assert loaded.provider.max_attempts == 5
+    assert loaded.provider.initial_backoff_seconds == 0.5
+    assert loaded.provider.max_backoff_seconds == 8
+    assert loaded.provider.max_concurrency == 6
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_attempts", 0),
+        ("initial_backoff_seconds", -0.1),
+        ("max_backoff_seconds", -0.1),
+        ("max_concurrency", 0),
+    ],
+)
+def test_protocol_provider_rejects_invalid_execution_policy(
+    field: str,
+    value: int | float,
+) -> None:
+    provider = {
+        "model": "test-model",
+        "base_url": "http://localhost:1234/v1",
+        field: value,
+    }
+
+    with pytest.raises(ValueError):
+        _protocol(provider=provider)
+
+
 def test_protocol_identity_excludes_only_seed_defaults() -> None:
     original = _protocol()
     different_seeds = _protocol(persona_seed=99, run_seed=101)
