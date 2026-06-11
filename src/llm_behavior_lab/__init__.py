@@ -25,6 +25,7 @@ from llm_behavior_lab.protocols import (
 )
 from llm_behavior_lab.runner import (
     run_persisted_persona_batch,
+    run_persisted_persona_batch_async,
     run_questionnaire,
     run_questionnaire_async,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "preview_persona_creation",
     "protocol_fingerprint",
     "run_persisted_persona_batch",
+    "run_persisted_persona_batch_async",
     "run_behavioral_task",
     "run_questionnaire",
     "run_questionnaire_async",

@@ -72,7 +72,11 @@ task steps.
     "model": "openai/gpt-oss-20b",
     "base_url": "http://localhost:1234/v1",
     "temperature": 0,
-    "timeout_seconds": 60
+    "timeout_seconds": 60,
+    "max_attempts": 3,
+    "initial_backoff_seconds": 1,
+    "max_backoff_seconds": 30,
+    "max_concurrency": 4
   },
   "steps": [
     {
@@ -119,9 +123,29 @@ reuse, and an optional run seed. Scripts must pass `--new-run`.
 - Any other configuration change requires a new experiment ID.
 - `history: reset` starts from the persona prompt.
 - `history: inherit` carries the prior step conversation forward.
+- `max_concurrency` bounds concurrent subjects; items and trials stay sequential
+  within each subject.
+- Provider retries cover transport failures, timeouts, HTTP 408/409/429, and
+  server errors. Other client errors are recorded without automatic retry.
 
 The initial `protocol-create` call validates and stores the protocol and cohort.
 Subsequent confirmed or `--new-run` calls execute the protocol.
+
+Resume an interrupted protocol run explicitly:
+
+```bash
+uv run llm-behavior-lab protocol-create \
+  --file study.json \
+  --run-id run-protocol-openai-gpt-oss-20b-20260611090000
+```
+
+Resuming with `--run-id` reuses the persisted run, skips completed questionnaire
+items and task trials, and only retries the latest failed or invalid units when
+`--retry-failed` is set.
+
+Add `--retry-failed` only when the latest failed or invalid questionnaire items
+or task subjects should be attempted again. Repeating a resume with no eligible
+work performs no provider calls.
 
 ## Scoring and Task Analysis
 
@@ -160,12 +184,21 @@ uv run llm-behavior-lab scale-design \
   --persona-field age \
   --persona-field country \
   --model openai/gpt-oss-20b \
+  --max-attempts 3 \
+  --initial-backoff 1 \
+  --max-backoff 30 \
+  --max-concurrency 4 \
   --seed 123
 
 uv run llm-behavior-lab personas --experiment-id pilot-study-one
 
 OPENAI_API_KEY=lm-studio \
 uv run llm-behavior-lab scale-run --experiment-id pilot-study-one
+
+# Resume only this existing run:
+uv run llm-behavior-lab scale-run \
+  --experiment-id pilot-study-one \
+  --run-id run-bfi10-openai-gpt-oss-20b-20260611090000
 
 uv run llm-behavior-lab scale-score --experiment-id pilot-study-one
 uv run llm-behavior-lab scale-results --experiment-id pilot-study-one
@@ -174,7 +207,17 @@ uv run llm-behavior-lab scale-results --experiment-id pilot-study-one
 Use `task-design`, `task-run`, `task-analyze`, and `task-results` for the staged
 behavioral-task equivalent. Task runs support bounded cross-subject concurrency,
 explicit run resumption, and opt-in retries of failed or twice-invalid subjects.
-Questionnaire runs do not yet resume partially completed subjects.
+Questionnaire runs use the same explicit `--run-id` and `--retry-failed`
+semantics. Omitting `--run-id` always creates a new run.
+
+The run snapshot is written with `partial` status before provider calls begin.
+Resume an interrupted staged run with `scale-run --run-id RUN_ID`; completed
+items are not called again.
+
+`partial` means expected units are still absent. `cancelled` means cooperative
+cancellation was requested and persisted after active subjects finished. Local
+providers such as Ollama and LM Studio often perform best with
+`--max-concurrency 1` or another conservative value.
 
 ## Runtime Layout
 

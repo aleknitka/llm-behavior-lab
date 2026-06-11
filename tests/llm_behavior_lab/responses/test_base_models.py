@@ -63,6 +63,11 @@ def test_session_record_captures_batch_session_metadata() -> None:
     assert session.metadata["questionnaire_id"] == "bfi_10"
 
 
+def test_response_status_supports_partial_and_cancelled() -> None:
+    assert ResponseStatus("partial") is ResponseStatus.PARTIAL
+    assert ResponseStatus("cancelled") is ResponseStatus.CANCELLED
+
+
 def test_run_record_captures_persona_questionnaire_provider_metadata() -> None:
     started_at = datetime(2026, 6, 3, 12, 0, tzinfo=UTC)
     provider = ProviderSnapshot(
@@ -72,6 +77,10 @@ def test_run_record_captures_persona_questionnaire_provider_metadata() -> None:
         timeout_seconds=60.0,
         supports_structured_outputs=False,
         supports_logprobs=True,
+        max_attempts=5,
+        initial_backoff_seconds=0.5,
+        max_backoff_seconds=8,
+        max_concurrency=6,
     )
 
     run = RunRecord(
@@ -104,6 +113,33 @@ def test_run_record_captures_persona_questionnaire_provider_metadata() -> None:
     assert run.questionnaire_shorthand == "bfi10"
     assert run.model_slug == "llama3-1"
     assert run.item_count == 10
+    assert run.provider.max_attempts == 5
+    assert run.provider.max_concurrency == 6
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_attempts", 0),
+        ("initial_backoff_seconds", -0.1),
+        ("max_backoff_seconds", -0.1),
+        ("max_concurrency", 0),
+    ],
+)
+def test_provider_snapshot_rejects_invalid_execution_policy(
+    field: str,
+    value: int | float,
+) -> None:
+    with pytest.raises(ValidationError):
+        ProviderSnapshot.model_validate(
+            {
+                "provider_base_url": "http://localhost",
+                "model": "test",
+                "temperature": 0,
+                "timeout_seconds": 10,
+                field: value,
+            }
+        )
 
 
 def test_item_response_record_stores_raw_and_parsed_output() -> None:

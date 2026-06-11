@@ -38,11 +38,28 @@ The notebook uses:
 - model `gemma4:12b`;
 - temperature `0`;
 - seed `20260609`;
+- maximum attempts `3` with exponential backoff capped at `30` seconds;
+- maximum concurrency `1`;
 - structured outputs disabled;
 - logprobs disabled.
 
+Concurrency is across personas only; BFI-10 items remain sequential within each
+persona. Keep local-provider concurrency conservative and increase it only after
+measuring model-server throughput and memory use.
+
 Use a new valid three-part experiment ID for another run. Generated artifacts
 are written under `experiments/{experiment_id}/` and must not be committed.
+If execution is interrupted, rerun `scale-run` with the existing run directory
+name:
+
+```bash
+uv run llm-behavior-lab scale-run \
+  --experiment-id your-study-id \
+  --run-id run-bfi10-gemma4-12b-20260611090000 \
+  --api-key ollama
+```
+
+Add `--retry-failed` to retry latest failed or invalid item attempts.
 
 The staged factorial workflow writes complete snapshots as JSON:
 

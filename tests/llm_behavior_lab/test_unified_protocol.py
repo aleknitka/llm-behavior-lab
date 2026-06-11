@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -10,6 +11,7 @@ from llm_behavior_lab.models import LlmQuestionResult, ModelSettings
 from llm_behavior_lab.protocol_runs import (
     create_protocol_experiment,
     create_protocol_run,
+    create_protocol_run_async,
     load_protocol_experiment,
 )
 from llm_behavior_lab.protocols import (
@@ -19,6 +21,7 @@ from llm_behavior_lab.protocols import (
     load_compatible_protocol,
     protocol_fingerprint,
 )
+from llm_behavior_lab.responses.base import ResponseStatus
 
 
 class RecordingClient:
@@ -35,6 +38,22 @@ class RecordingClient:
         allowed_answer_ids: Sequence[str],
     ) -> LlmQuestionResult:
         self.calls.append(list(messages))
+        selected = allowed_answer_ids[0]
+        return LlmQuestionResult(selected_answer_id=selected, raw_response=selected)
+
+
+class AsyncRecordingClient:
+    def __init__(self, api_key: str, base_url: str) -> None:
+        self.api_key = api_key
+        self.base_url = base_url
+
+    async def complete(
+        self,
+        messages: Sequence[dict[str, str]],
+        settings: ModelSettings,
+        allowed_answer_ids: Sequence[str],
+    ) -> LlmQuestionResult:
+        RecordingClient.calls.append(list(messages))
         selected = allowed_answer_ids[0]
         return LlmQuestionResult(selected_answer_id=selected, raw_response=selected)
 
@@ -89,6 +108,49 @@ def test_unified_protocol_round_trips_ordered_mixed_steps() -> None:
     assert [step.id for step in loaded.steps] == ["personality", "decision-task"]
 
 
+def test_protocol_provider_round_trips_execution_policy() -> None:
+    protocol = _protocol(
+        provider={
+            "model": "test-model",
+            "base_url": "http://localhost:1234/v1",
+            "max_attempts": 5,
+            "initial_backoff_seconds": 0.5,
+            "max_backoff_seconds": 8,
+            "max_concurrency": 6,
+        }
+    )
+
+    loaded = UnifiedExperimentProtocol.model_validate_json(protocol.model_dump_json())
+
+    assert loaded.provider.max_attempts == 5
+    assert loaded.provider.initial_backoff_seconds == 0.5
+    assert loaded.provider.max_backoff_seconds == 8
+    assert loaded.provider.max_concurrency == 6
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_attempts", 0),
+        ("initial_backoff_seconds", -0.1),
+        ("max_backoff_seconds", -0.1),
+        ("max_concurrency", 0),
+    ],
+)
+def test_protocol_provider_rejects_invalid_execution_policy(
+    field: str,
+    value: int | float,
+) -> None:
+    provider = {
+        "model": "test-model",
+        "base_url": "http://localhost:1234/v1",
+        field: value,
+    }
+
+    with pytest.raises(ValueError):
+        _protocol(provider=provider)
+
+
 def test_protocol_identity_excludes_only_seed_defaults() -> None:
     original = _protocol()
     different_seeds = _protocol(persona_seed=99, run_seed=101)
@@ -112,9 +174,7 @@ def test_create_protocol_experiment_writes_immutable_protocol_and_first_cohort(
     assert created.protocol_path == experiment_root / "protocol.json"
     assert created.cohort_id.startswith("cohort-")
     assert (experiment_root / "cohorts" / created.cohort_id / "personas.json").exists()
-    assert (
-        experiment_root / "cohorts" / created.cohort_id / "protocol-assignments.json"
-    ).exists()
+    assert (experiment_root / "cohorts" / created.cohort_id / "protocol-assignments.json").exists()
     metadata = json.loads(
         (experiment_root / "cohorts" / created.cohort_id / "metadata.json").read_text()
     )
@@ -190,6 +250,10 @@ def test_protocol_run_records_effective_seeds_cohort_and_step_results(
 ) -> None:
     RecordingClient.calls = []
     monkeypatch.setattr("llm_behavior_lab.protocol_runs.OpenAiChatClient", RecordingClient)
+    monkeypatch.setattr(
+        "llm_behavior_lab.protocol_runs.AsyncOpenAiChatClient",
+        AsyncRecordingClient,
+    )
     created = create_protocol_experiment(tmp_path, _protocol())
 
     result = create_protocol_run(
@@ -218,6 +282,10 @@ def test_inherit_step_receives_prior_questionnaire_history(
 ) -> None:
     RecordingClient.calls = []
     monkeypatch.setattr("llm_behavior_lab.protocol_runs.OpenAiChatClient", RecordingClient)
+    monkeypatch.setattr(
+        "llm_behavior_lab.protocol_runs.AsyncOpenAiChatClient",
+        AsyncRecordingClient,
+    )
     protocol = _protocol()
     created = create_protocol_experiment(tmp_path, protocol)
 
@@ -253,6 +321,10 @@ def test_interactive_rerun_prompts_for_optional_run_seed(
     path = tmp_path / "study.json"
     path.write_text(_protocol().model_dump_json(indent=2))
     monkeypatch.setattr("llm_behavior_lab.protocol_runs.OpenAiChatClient", RecordingClient)
+    monkeypatch.setattr(
+        "llm_behavior_lab.protocol_runs.AsyncOpenAiChatClient",
+        AsyncRecordingClient,
+    )
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     answers = iter(["yes", "yes", "33"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
@@ -264,6 +336,301 @@ def test_interactive_rerun_prompts_for_optional_run_seed(
     run_root = next(experiment_root.glob("run-protocol-*"))
     row = json.loads((run_root / "run.json").read_text())
     assert row["metadata"]["run_seed"] == 33
+
+
+def test_protocol_run_resumes_only_missing_questionnaire_items(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = _protocol(
+        steps=[
+            {
+                "id": "personality",
+                "kind": "questionnaire",
+                "questionnaire_id": "bfi_10",
+                "history": "reset",
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        "llm_behavior_lab.protocol_runs.AsyncOpenAiChatClient",
+        AsyncRecordingClient,
+    )
+    created = create_protocol_experiment(tmp_path, protocol)
+    first = create_protocol_run(
+        tmp_path,
+        protocol,
+        cohort_id=created.cohort_id,
+        api_key="test-key",
+    )
+    step_root = first.run_root / "steps" / "personality"
+    response_path = next((step_root / "responses").glob("*.jsonl"))
+    response_path.write_text(
+        response_path.read_text().splitlines()[0] + "\n",
+        encoding="utf-8",
+    )
+    step_run_path = step_root / "run.json"
+    step_run = json.loads(step_run_path.read_text())
+    step_run["status"] = "partial"
+    step_run["item_count"] = 1
+    step_run_path.write_text(json.dumps(step_run))
+    top_run_path = first.run_root / "run.json"
+    top_run = json.loads(top_run_path.read_text())
+    top_run["status"] = "partial"
+    top_run["metadata"]["step_results"][0]["status"] = "partial"
+    top_run_path.write_text(json.dumps(top_run))
+    RecordingClient.calls = []
+
+    resumed = create_protocol_run(
+        tmp_path,
+        protocol,
+        run_id=first.run_id,
+        api_key="test-key",
+    )
+
+    assert len(RecordingClient.calls) == 9
+    assert resumed.run_id == first.run_id
+    assert resumed.step_results[0].status is ResponseStatus.COMPLETED
+
+
+def test_completed_protocol_resume_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = _protocol(
+        steps=[
+            {
+                "id": "personality",
+                "kind": "questionnaire",
+                "questionnaire_id": "bfi_10",
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        "llm_behavior_lab.protocol_runs.AsyncOpenAiChatClient",
+        AsyncRecordingClient,
+    )
+    created = create_protocol_experiment(tmp_path, protocol)
+    first = create_protocol_run(
+        tmp_path,
+        protocol,
+        cohort_id=created.cohort_id,
+        api_key="test-key",
+    )
+    RecordingClient.calls = []
+
+    resumed = create_protocol_run(
+        tmp_path,
+        protocol,
+        run_id=first.run_id,
+        api_key="test-key",
+    )
+
+    assert RecordingClient.calls == []
+    assert resumed.step_results[0].status is ResponseStatus.COMPLETED
+
+
+def test_protocol_resume_rejects_different_cohort_before_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = _protocol(
+        steps=[
+            {
+                "id": "personality",
+                "kind": "questionnaire",
+                "questionnaire_id": "bfi_10",
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        "llm_behavior_lab.protocol_runs.AsyncOpenAiChatClient",
+        AsyncRecordingClient,
+    )
+    first_cohort = create_protocol_experiment(tmp_path, protocol)
+    second = create_protocol_run(tmp_path, protocol, persona_seed=12, execute=False)
+    first = create_protocol_run(
+        tmp_path,
+        protocol,
+        cohort_id=first_cohort.cohort_id,
+        api_key="test-key",
+    )
+    RecordingClient.calls = []
+
+    with pytest.raises(ValueError, match="cohort"):
+        create_protocol_run(
+            tmp_path,
+            protocol,
+            run_id=first.run_id,
+            cohort_id=second.cohort_id,
+            api_key="test-key",
+        )
+
+    assert RecordingClient.calls == []
+
+
+@pytest.mark.anyio
+async def test_protocol_run_honors_pre_set_cancellation_event(
+    tmp_path: Path,
+) -> None:
+    protocol = _protocol()
+    created = create_protocol_experiment(tmp_path, protocol)
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+
+    result = await create_protocol_run_async(
+        tmp_path,
+        protocol,
+        cohort_id=created.cohort_id,
+        api_key="test-key",
+        cancel_event=cancel_event,
+    )
+
+    row = json.loads((result.run_root / "run.json").read_text())
+    assert row["status"] == "cancelled"
+    assert result.step_results == []
+
+
+def test_protocol_resume_rejects_completed_step_after_incomplete_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = _protocol(
+        steps=[
+            {
+                "id": "first",
+                "kind": "questionnaire",
+                "questionnaire_id": "bfi_10",
+            },
+            {
+                "id": "second",
+                "kind": "questionnaire",
+                "questionnaire_id": "bfi_10",
+                "history": "inherit",
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "llm_behavior_lab.protocol_runs.AsyncOpenAiChatClient",
+        AsyncRecordingClient,
+    )
+    created = create_protocol_experiment(tmp_path, protocol)
+    first = create_protocol_run(
+        tmp_path,
+        protocol,
+        cohort_id=created.cohort_id,
+        api_key="test-key",
+    )
+    row = json.loads((first.run_root / "run.json").read_text())
+    row["status"] = "partial"
+    row["metadata"]["step_results"][0]["status"] = "partial"
+    (first.run_root / "run.json").write_text(json.dumps(row))
+    RecordingClient.calls = []
+
+    with pytest.raises(ValueError, match="cannot follow an incomplete step"):
+        create_protocol_run(
+            tmp_path,
+            protocol,
+            run_id=first.run_id,
+            api_key="test-key",
+        )
+
+    assert RecordingClient.calls == []
+
+
+def test_protocol_questionnaire_step_persists_step_conversations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = _protocol(
+        steps=[
+            {
+                "id": "personality",
+                "kind": "questionnaire",
+                "questionnaire_id": "bfi_10",
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        "llm_behavior_lab.protocol_runs.AsyncOpenAiChatClient",
+        AsyncRecordingClient,
+    )
+    created = create_protocol_experiment(tmp_path, protocol)
+
+    result = create_protocol_run(
+        tmp_path,
+        protocol,
+        cohort_id=created.cohort_id,
+        api_key="test-key",
+    )
+
+    conversation_paths = list(
+        (result.run_root / "steps" / "personality" / "conversations").glob("*.jsonl")
+    )
+    assert len(conversation_paths) == 1
+    assert conversation_paths[0].read_text().strip()
+    metadata = json.loads(
+        (
+            tmp_path / "experiments" / protocol.experiment_id / "metadata.json"
+        ).read_text()
+    )
+    assert metadata["runs"][0]["procedure_kind"] == "protocol"
+
+
+def test_protocol_stops_after_incomplete_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = _protocol(
+        steps=[
+            {
+                "id": "first",
+                "kind": "questionnaire",
+                "questionnaire_id": "bfi_10",
+            },
+            {
+                "id": "second",
+                "kind": "questionnaire",
+                "questionnaire_id": "bfi_10",
+            },
+        ]
+    )
+
+    class FailingClient(AsyncRecordingClient):
+        async def complete(self, messages, settings, allowed_answer_ids):
+            raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(
+        "llm_behavior_lab.protocol_runs.AsyncOpenAiChatClient",
+        FailingClient,
+    )
+    created = create_protocol_experiment(tmp_path, protocol)
+
+    result = create_protocol_run(
+        tmp_path,
+        protocol,
+        cohort_id=created.cohort_id,
+        api_key="test-key",
+    )
+
+    assert [step.step_id for step in result.step_results] == ["first"]
+    assert not (result.run_root / "steps" / "second").exists()
+
+
+def test_protocol_create_parser_accepts_resume_controls() -> None:
+    args = build_parser().parse_args(
+        [
+            "protocol-create",
+            "--file",
+            "study.json",
+            "--run-id",
+            "run-protocol-test-model-20260610120000",
+            "--retry-failed",
+        ]
+    )
+
+    assert args.run_id == "run-protocol-test-model-20260610120000"
+    assert args.retry_failed is True
 
 
 def test_cli_rejects_cohort_id_with_persona_seed() -> None:
@@ -333,9 +700,7 @@ def test_legacy_design_and_factor_protocol_remain_loadable(tmp_path: Path) -> No
     )
 
     loaded = load_protocol_experiment(tmp_path, "legacy-study-one")
-    factor = load_compatible_protocol(
-        Path("examples/ollama-bfi10-factorial/protocol.json")
-    )
+    factor = load_compatible_protocol(Path("examples/ollama-bfi10-factorial/protocol.json"))
 
     assert loaded.source == "design.json"
     assert loaded.protocol.experiment_id == "legacy-study-one"

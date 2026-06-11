@@ -15,6 +15,7 @@ from llm_behavior_lab.responses.base import (
     TextAnswerValue,
 )
 from llm_behavior_lab.responses.base.values import LikertAnswerValue
+from llm_behavior_lab.responses.item_ledgers import latest_item_attempts
 from llm_behavior_lab.storage import (
     load_json_document,
     resolve_compatible_snapshot_path,
@@ -69,13 +70,13 @@ def write_response_table_csv(rows: Iterable[dict[str, Any]], path: Path) -> None
 
 def _load_records(path: Path) -> list[ItemResponseRecord]:
     if path.is_file():
-        return _load_jsonl_file(path)
+        return latest_item_attempts(_load_jsonl_file(path))
 
     responses_root = path / "responses" if (path / "responses").is_dir() else path
     records: list[ItemResponseRecord] = []
     for response_path in sorted(responses_root.glob("*.jsonl")):
         records.extend(_load_jsonl_file(response_path))
-    return records
+    return latest_item_attempts(records)
 
 
 def _load_jsonl_file(path: Path) -> list[ItemResponseRecord]:

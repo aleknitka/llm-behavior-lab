@@ -35,6 +35,7 @@ async def run_persisted_task_batch_async(
     response_metadata_by_subject: dict[str, dict[str, object]] | None = None,
     initial_histories: dict[str, list[Message]] | None = None,
     run_root_override: Path | None = None,
+    cancel_event: asyncio.Event | None = None,
 ) -> RunRecord:
     """Run subjects concurrently while preserving sequential trials per subject."""
     if concurrency < 1:
@@ -50,9 +51,7 @@ async def run_persisted_task_batch_async(
         resolved_run_id,
         run_root_override=run_root_override,
     )
-    session_id = _existing_session_id(paths.run_path) or normalize_prefixed_uuid(
-        "session-"
-    )
+    session_id = _existing_session_id(paths.run_path) or normalize_prefixed_uuid("session-")
     paths.run_root.mkdir(parents=True, exist_ok=True)
     task_path = paths.run_root / "task.json"
     if not task_path.exists():
@@ -63,6 +62,7 @@ async def run_persisted_task_batch_async(
         raise ValueError("persisted task configuration does not match experiment")
 
     semaphore = asyncio.Semaphore(concurrency)
+    cancellation = cancel_event or asyncio.Event()
     metadata = response_metadata_by_subject or {}
 
     async def run_subject(generated: GeneratedPersona):
@@ -71,6 +71,8 @@ async def run_persisted_task_batch_async(
         if response_path.exists() and not resume:
             raise FileExistsError(f"task response ledger already exists: {response_path}")
         async with semaphore:
+            if cancellation.is_set():
+                return None
             return await asyncio.to_thread(
                 run_behavioral_task,
                 persona=_runtime_persona(generated),
@@ -92,19 +94,20 @@ async def run_persisted_task_batch_async(
                 run_root_override=run_root_override,
             )
 
-    results = await asyncio.gather(
-        *(run_subject(persona) for persona in personas.personas)
-    )
+    results = await asyncio.gather(*(run_subject(persona) for persona in personas.personas))
     completed_at = datetime.now(UTC)
-    statuses = [result.status for result in results]
+    completed_results = [result for result in results if result is not None]
+    statuses = [result.status for result in completed_results]
     status = ResponseStatus.COMPLETED
-    if ResponseStatus.FAILED in statuses:
+    if cancellation.is_set():
+        status = ResponseStatus.CANCELLED
+    elif ResponseStatus.FAILED in statuses:
         status = ResponseStatus.FAILED
     elif ResponseStatus.INVALID in statuses:
         status = ResponseStatus.INVALID
     elif ResponseStatus.SKIPPED in statuses:
         status = ResponseStatus.SKIPPED
-    records = [record for result in results for record in result.records]
+    records = [record for result in completed_results for record in result.records]
     run_record = RunRecord(
         experiment_id=experiment_id,
         session_id=session_id,
@@ -120,6 +123,10 @@ async def run_persisted_task_batch_async(
             model=settings.model,
             temperature=settings.temperature,
             timeout_seconds=settings.timeout_seconds,
+            max_attempts=settings.max_attempts,
+            initial_backoff_seconds=settings.initial_backoff_seconds,
+            max_backoff_seconds=settings.max_backoff_seconds,
+            max_concurrency=settings.max_concurrency,
             supports_structured_outputs=settings.capabilities.supports_structured_outputs,
             supports_logprobs=settings.capabilities.supports_logprobs,
         ),
@@ -127,12 +134,9 @@ async def run_persisted_task_batch_async(
         completed_at=completed_at,
         status=status,
         error_count=sum(
-            record.status in {ResponseStatus.FAILED, ResponseStatus.INVALID}
-            for record in records
+            record.status in {ResponseStatus.FAILED, ResponseStatus.INVALID} for record in records
         ),
-        item_count=sum(
-            record.status == ResponseStatus.COMPLETED for record in records
-        ),
+        item_count=sum(record.status == ResponseStatus.COMPLETED for record in records),
         output_paths={
             "run": str(paths.run_path),
             "responses": str(paths.responses_root),
@@ -178,8 +182,6 @@ def _next_task_run_id(
             f"run-task-{slugify_model_name(task.id)}-"
             f"{slugify_model_name(settings.model)}-{timestamp}"
         )
-        if not resolve_experiment_paths(
-            project_root, experiment_id, run_id
-        ).run_root.exists():
+        if not resolve_experiment_paths(project_root, experiment_id, run_id).run_root.exists():
             return run_id
         candidate += timedelta(seconds=1)
