@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -42,6 +43,8 @@ def run_behavioral_task(
     retry_failed: bool = False,
     max_trials: int | None = None,
     response_metadata: dict[str, object] | None = None,
+    initial_history: Sequence[Message] | None = None,
+    run_root_override: Path | None = None,
 ) -> TaskRunResult:
     """Run or resume one persona through a stateful behavioral task.
 
@@ -49,7 +52,12 @@ def run_behavioral_task(
     chat history are reconstructed by replaying those transitions in order.
     """
     experiment_id = validate_experiment_id(experiment_id)
-    paths = resolve_experiment_paths(project_root, experiment_id, run_id)
+    paths = resolve_experiment_paths(
+        project_root,
+        experiment_id,
+        run_id,
+        run_root_override=run_root_override,
+    )
     response_path = paths.response_path_for_subject(persona.persona_id)
     conversation_path = (
         paths.run_root / "conversations" / f"{persona.persona_id}.jsonl"
@@ -75,7 +83,7 @@ def run_behavioral_task(
         return TaskRunResult(records=existing, status=existing[-1].status)
     completed = [record for record in existing if record.status == ResponseStatus.COMPLETED]
     state, transitions = _replay(task, resolved_schedule, completed)
-    history = _history(persona, task, transitions)
+    history = _history(persona, task, transitions, initial_history)
     _write_conversation(conversation_path, history)
 
     records = list(existing)
@@ -229,11 +237,16 @@ def _history(
     persona: Persona,
     task: IowaGamblingTask,
     transitions: list[TaskTransition],
+    initial_history: Sequence[Message] | None = None,
 ) -> list[Message]:
-    history: list[Message] = [
-        {"role": "system", "content": render_persona_intro(persona)},
-        {"role": "user", "content": task.instruction()},
-    ]
+    history: list[Message] = (
+        [*initial_history, {"role": "user", "content": task.instruction()}]
+        if initial_history is not None
+        else [
+            {"role": "system", "content": render_persona_intro(persona)},
+            {"role": "user", "content": task.instruction()},
+        ]
+    )
     for transition in transitions:
         history.extend(
             [

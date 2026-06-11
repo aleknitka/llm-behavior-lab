@@ -7,7 +7,7 @@ from pathlib import Path
 
 from llm_behavior_lab.behavioral_tasks.iowa_gambling import IowaGamblingTask
 from llm_behavior_lab.behavioral_tasks.runner import run_behavioral_task
-from llm_behavior_lab.client import SyncLlmClient
+from llm_behavior_lab.client import Message, SyncLlmClient
 from llm_behavior_lab.models import ModelSettings, Persona
 from llm_behavior_lab.personas.factory import GeneratedPersona, PersonaBatch
 from llm_behavior_lab.responses.base import ProviderSnapshot, ResponseStatus, RunRecord
@@ -31,6 +31,8 @@ async def run_persisted_task_batch_async(
     resume: bool = True,
     retry_failed: bool = False,
     response_metadata_by_subject: dict[str, dict[str, object]] | None = None,
+    initial_histories: dict[str, list[Message]] | None = None,
+    run_root_override: Path | None = None,
 ) -> RunRecord:
     """Run subjects concurrently while preserving sequential trials per subject."""
     if concurrency < 1:
@@ -40,7 +42,12 @@ async def run_persisted_task_batch_async(
     resolved_run_id = run_id or _next_task_run_id(
         project_root, experiment_id, task, settings, started_at
     )
-    paths = resolve_experiment_paths(project_root, experiment_id, resolved_run_id)
+    paths = resolve_experiment_paths(
+        project_root,
+        experiment_id,
+        resolved_run_id,
+        run_root_override=run_root_override,
+    )
     session_id = _existing_session_id(paths.run_path) or normalize_prefixed_uuid(
         "session-"
     )
@@ -79,6 +86,8 @@ async def run_persisted_task_batch_async(
                 resume=response_path.exists(),
                 retry_failed=retry_failed,
                 response_metadata=metadata.get(subject_id),
+                initial_history=(initial_histories or {}).get(subject_id),
+                run_root_override=run_root_override,
             )
 
     results = await asyncio.gather(

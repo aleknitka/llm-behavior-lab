@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from llm_behavior_lab.personas.factory import RequestedDemographicField
+from llm_behavior_lab.personas.value_specs import RandUniformRange
 from llm_behavior_lab.protocols import (
     ExperimentProtocol,
     ProtocolFactor,
@@ -157,3 +158,187 @@ def test_protocol_models_reject_duplicate_level_ids() -> None:
                 ProtocolFactorLevel(id="female", value="male"),
             ],
         )
+
+
+def test_protocol_range_level_round_trips_as_configuration() -> None:
+    protocol = _protocol(
+        factors=[
+            {
+                "name": "age_group",
+                "field": "age",
+                "levels": [
+                    {
+                        "id": "younger",
+                        "value": {
+                            "type": "rand_uniform_range",
+                            "left": 20,
+                            "right": 35,
+                        },
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert protocol.factors[0].levels[0].value == RandUniformRange(20, 35)
+    assert protocol.model_dump(mode="json")["factors"][0]["levels"][0]["value"] == {
+        "type": "rand_uniform_range",
+        "left": 20,
+        "right": 35,
+    }
+
+
+def test_protocol_range_levels_sample_per_iteration_deterministically() -> None:
+    protocol = _protocol(
+        base_persona_count=1,
+        iterations=5,
+        requested_fields=["age", "country"],
+        factors=[
+            {
+                "name": "age_group",
+                "field": "age",
+                "levels": [
+                    {
+                        "id": "adult",
+                        "value": {
+                            "type": "rand_uniform_range",
+                            "left": 20,
+                            "right": 120,
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+
+    first = expand_protocol_personas(protocol, "proto-study-one")
+    second = expand_protocol_personas(protocol, "proto-study-one")
+    sampled_ages = [assignment.factor_values["age"] for assignment in first.assignments]
+
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
+    assert len(set(sampled_ages)) > 1
+    assert all(isinstance(age, int) and 20 <= age <= 120 for age in sampled_ages)
+    assert [persona.features.age for persona in first.personas.personas] == sampled_ages
+
+
+def test_protocol_range_samples_are_independent_of_factor_order() -> None:
+    age_factor = {
+        "name": "age_group",
+        "field": "age",
+        "levels": [
+            {
+                "id": "adult",
+                "value": {
+                    "type": "rand_uniform_range",
+                    "left": 20,
+                    "right": 60,
+                },
+            }
+        ],
+    }
+    gender_factor = {
+        "name": "gender",
+        "field": "gender",
+        "levels": [
+            {"id": "female", "value": "female"},
+            {"id": "male", "value": "male"},
+        ],
+    }
+    common = {
+        "base_persona_count": 2,
+        "iterations": 3,
+        "requested_fields": ["age", "country", "gender"],
+    }
+
+    first = expand_protocol_personas(
+        _protocol(**common, factors=[age_factor, gender_factor]), "proto-study-one"
+    )
+    reordered = expand_protocol_personas(
+        _protocol(**common, factors=[gender_factor, age_factor]), "proto-study-one"
+    )
+
+    def samples_by_iteration(expansion) -> dict[tuple[str, int], int]:
+        return {
+            (assignment.base_subject_id, assignment.iteration_index): assignment.factor_values[
+                "age"
+            ]
+            for assignment in expansion.assignments
+        }
+
+    assert samples_by_iteration(first) == samples_by_iteration(reordered)
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        (
+            {
+                "seed": None,
+                "factors": [
+                    {
+                        "name": "age_group",
+                        "field": "age",
+                        "levels": [
+                            {
+                                "id": "adult",
+                                "value": {
+                                    "type": "rand_uniform_range",
+                                    "left": 20,
+                                    "right": 60,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "seed",
+        ),
+        (
+            {
+                "factors": [
+                    {
+                        "name": "country",
+                        "field": "country",
+                        "levels": [
+                            {
+                                "id": "bad",
+                                "value": {
+                                    "type": "rand_uniform_range",
+                                    "left": 1,
+                                    "right": 2,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "country",
+        ),
+        (
+            {
+                "factors": [
+                    {
+                        "name": "age_group",
+                        "field": "age",
+                        "levels": [
+                            {
+                                "id": "bad",
+                                "value": {
+                                    "type": "rand_uniform_range",
+                                    "left": 121,
+                                    "right": 122,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "age",
+        ),
+    ],
+)
+def test_protocol_rejects_invalid_range_configuration(
+    updates: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        _protocol(**updates)

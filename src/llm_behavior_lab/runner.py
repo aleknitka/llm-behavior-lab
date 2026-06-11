@@ -70,6 +70,7 @@ class BatchRunResult:
     session_id: str
     personas: PersonaBatch
     runs: list[RunRecord]
+    histories: dict[str, list[Message]] | None = None
 
 
 def _allowed_answer_ids(response_format: ResponseFormat) -> list[str]:
@@ -318,6 +319,8 @@ def run_questionnaire(
     write_session_record: bool = True,
     response_metadata: dict[str, object] | None = None,
     context: str | None = None,
+    initial_history: Sequence[Message] | None = None,
+    run_root_override: Path | None = None,
 ) -> list[ItemResponseRecord]:
     """Run one questionnaire synchronously for a single persona.
 
@@ -361,6 +364,7 @@ def run_questionnaire(
         project_root=project_root,
         experiment_id=resolved_experiment_id,
         run_id=resolved_run_id,
+        run_root_override=run_root_override,
     )
     logger.info(
         "Starting questionnaire run {run_id} for persona {persona_id} "
@@ -370,9 +374,11 @@ def run_questionnaire(
         questionnaire_id=questionnaire.id,
         model=settings.model,
     )
-    history: list[Message] = [
-        {"role": "system", "content": render_persona_intro(persona, context=context)}
-    ]
+    history: list[Message] = (
+        list(initial_history)
+        if initial_history is not None
+        else [{"role": "system", "content": render_persona_intro(persona, context=context)}]
+    )
     records: list[ItemResponseRecord] = []
 
     for item in questionnaire.items:
@@ -631,43 +637,60 @@ def run_persisted_persona_batch(
     project_root: Path,
     context: str | None = None,
     response_metadata_by_subject: dict[str, dict[str, object]] | None = None,
+    initial_histories: dict[str, list[Message]] | None = None,
+    run_id: str | None = None,
+    run_root_override: Path | None = None,
 ) -> BatchRunResult:
     """Run a previously materialized persona batch without regenerating subjects."""
     experiment_id = validate_experiment_id(personas.experiment_id)
     session_id = normalize_prefixed_uuid("session-")
     started_at = datetime.now(UTC)
-    run_id = _next_run_id(
+    resolved_run_id = run_id or _next_run_id(
         project_root=project_root,
         experiment_id=experiment_id,
         questionnaire=questionnaire,
         settings=settings,
         started_at=started_at,
     )
-    paths = resolve_experiment_paths(project_root, experiment_id, run_id)
+    paths = resolve_experiment_paths(
+        project_root,
+        experiment_id,
+        resolved_run_id,
+        run_root_override=run_root_override,
+    )
     all_records: list[ItemResponseRecord] = []
+    histories: dict[str, list[Message]] = {}
     for generated_persona in personas.personas:
         subject_id = str(generated_persona.subject_id)
-        all_records.extend(
-            run_questionnaire(
-                persona=_runtime_persona_from_generated(generated_persona),
-                questionnaire=questionnaire,
-                settings=settings,
-                client=client,
-                project_root=project_root,
-                experiment_id=experiment_id,
-                session_id=session_id,
-                run_id=run_id,
-                write_session_record=False,
-                response_metadata=(response_metadata_by_subject or {}).get(subject_id),
-                context=context,
-            )
+        persona = _runtime_persona_from_generated(generated_persona)
+        records = run_questionnaire(
+            persona=persona,
+            questionnaire=questionnaire,
+            settings=settings,
+            client=client,
+            project_root=project_root,
+            experiment_id=experiment_id,
+            session_id=session_id,
+            run_id=resolved_run_id,
+            write_session_record=False,
+            response_metadata=(response_metadata_by_subject or {}).get(subject_id),
+            context=context,
+            initial_history=(initial_histories or {}).get(subject_id),
+            run_root_override=run_root_override,
+        )
+        all_records.extend(records)
+        histories[subject_id] = _history_after_questionnaire(
+            persona,
+            context,
+            (initial_histories or {}).get(subject_id),
+            records,
         )
 
     completed_at = datetime.now(UTC)
     run_record = _run_record(
         experiment_id,
         session_id,
-        run_id,
+        resolved_run_id,
         [str(persona.subject_id) for persona in personas.personas],
         len(personas.personas),
         questionnaire,
@@ -689,7 +712,41 @@ def run_persisted_persona_batch(
         session_id=session_id,
         personas=personas,
         runs=[run_record],
+        histories=histories,
     )
+
+
+def _history_after_questionnaire(
+    persona: Persona,
+    context: str | None,
+    initial_history: Sequence[Message] | None,
+    records: Sequence[ItemResponseRecord],
+) -> list[Message]:
+    history = (
+        list(initial_history)
+        if initial_history is not None
+        else [{"role": "system", "content": render_persona_intro(persona, context=context)}]
+    )
+    for record in records:
+        if record.status != ResponseStatus.COMPLETED:
+            continue
+        user_message = next(
+            (
+                message
+                for message in reversed(record.messages)
+                if message.role == "user"
+            ),
+            None,
+        )
+        if user_message is None:
+            continue
+        history.extend(
+            [
+                {"role": "user", "content": user_message.content},
+                {"role": "assistant", "content": record.raw_response or ""},
+            ]
+        )
+    return history
 
 
 def run_protocol_experiment(

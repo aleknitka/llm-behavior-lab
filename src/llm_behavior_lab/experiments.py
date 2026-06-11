@@ -4,6 +4,8 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from llm_behavior_lab.personas.factory import (
+    PERSONA_ENUM_FIELDS,
+    PERSONA_RANGE_FIELDS,
     PersonaBatch,
     PersonaFactory,
     PersonaFactoryRequest,
@@ -28,6 +30,27 @@ class PersonaDesign(BaseModel):
         default_factory=lambda: set(RequestedDemographicField)
     )
     generation_config: PersonaGenerationConfig = Field(default_factory=PersonaGenerationConfig)
+
+    @model_validator(mode="after")
+    def validate_persona_design(self) -> "PersonaDesign":
+        PersonaFactoryRequest(
+            count=self.count,
+            requested_fields=self.requested_fields,
+            seed=self.seed,
+            generation_config=self.generation_config,
+        )
+        return self
+
+
+class PersonaFieldDescriptor(BaseModel):
+    """Local description of one supported persona field."""
+
+    id: RequestedDemographicField
+    value_type: Literal["integer", "boolean", "text", "enum"]
+    allowed_values: list[str] = Field(default_factory=list)
+    supports_fixed_value: bool = True
+    supports_range: bool = False
+    supports_probabilities: bool = False
 
 
 class ProviderDesign(BaseModel):
@@ -100,11 +123,74 @@ def load_experiment_design(project_root: Path, experiment_id: str) -> Experiment
     return ExperimentDesign.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-def materialize_personas(project_root: Path, design: ExperimentDesign) -> PersonaBatch:
+def list_persona_fields() -> list[PersonaFieldDescriptor]:
+    """Return the explicit demographic fields supported by persona creation."""
+    descriptors = []
+    for field in RequestedDemographicField:
+        enum_type = PERSONA_ENUM_FIELDS.get(field)
+        if enum_type is not None:
+            descriptors.append(
+                PersonaFieldDescriptor(
+                    id=field,
+                    value_type="enum",
+                    allowed_values=[value.value for value in enum_type],
+                    supports_probabilities=True,
+                )
+            )
+        elif field in PERSONA_RANGE_FIELDS:
+            descriptors.append(
+                PersonaFieldDescriptor(id=field, value_type="integer", supports_range=True)
+            )
+        elif field is RequestedDemographicField.HAS_CHILDREN:
+            descriptors.append(PersonaFieldDescriptor(id=field, value_type="boolean"))
+        else:
+            descriptors.append(PersonaFieldDescriptor(id=field, value_type="text"))
+    return descriptors
+
+
+def preview_persona_creation(
+    experiment_id: str,
+    design: PersonaDesign,
+) -> PersonaFactoryRequest:
+    """Resolve and validate persona settings without creating files."""
+    return PersonaFactoryRequest(
+        count=design.count,
+        requested_fields=design.requested_fields,
+        seed=design.seed,
+        experiment_id=experiment_id,
+        generation_config=design.generation_config,
+    )
+
+
+def create_personas(
+    project_root: Path,
+    experiment_id: str,
+    design: PersonaDesign,
+    *,
+    replace: bool = False,
+) -> PersonaBatch:
+    """Create and persist one validated persona batch."""
+    personas_path = (
+        project_root / "experiments" / validate_experiment_id(experiment_id) / "personas.jsonl"
+    )
+    if personas_path.exists() and not replace:
+        raise FileExistsError(f"personas already exist: {personas_path}")
+    request = preview_persona_creation(experiment_id, design)
+    batch = PersonaFactory().create_demographics_batch(request)
+    write_persona_batch_jsonl(project_root, batch)
+    return batch
+
+
+def materialize_personas(
+    project_root: Path,
+    design: ExperimentDesign,
+    *,
+    replace: bool = False,
+) -> PersonaBatch:
     """Create the exact persona batch consumed by the later run stage."""
     experiment_root = project_root / "experiments" / design.experiment_id
     personas_path = experiment_root / "personas.jsonl"
-    if personas_path.exists():
+    if personas_path.exists() and not replace:
         raise FileExistsError(f"personas already exist: {personas_path}")
     if design.protocol is not None:
         expansion = expand_protocol_personas(design.protocol, design.experiment_id)
@@ -120,17 +206,12 @@ def materialize_personas(project_root: Path, design: ExperimentDesign) -> Person
 
     if design.personas is None:
         raise ValueError("persona design is required when no protocol is configured")
-    batch = PersonaFactory().create_demographics_batch(
-        PersonaFactoryRequest(
-            count=design.personas.count,
-            requested_fields=design.personas.requested_fields,
-            seed=design.personas.seed,
-            experiment_id=design.experiment_id,
-            generation_config=design.personas.generation_config,
-        )
+    return create_personas(
+        project_root,
+        design.experiment_id,
+        design.personas,
+        replace=replace,
     )
-    write_persona_batch_jsonl(project_root, batch)
-    return batch
 
 
 def load_personas(project_root: Path, experiment_id: str) -> PersonaBatch:

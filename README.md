@@ -31,11 +31,49 @@ load provider credentials, contact a model, or create experiment artifacts.
 Questionnaire selection uses exact stable IDs; the current IDs are `bfi_10`,
 `consumer_involvement`, and `purchase_decision_making_inventory`.
 
+Create a canonical multi-step experiment from one protocol file:
+
+```bash
+uv run llm-behavior-lab protocol-create --file study.json
+uv run llm-behavior-lab protocol-create \
+  --file study.json \
+  --new-run \
+  --cohort-id cohort-00000000-0000-4000-8000-000000000000 \
+  --run-seed 456
+```
+
+`protocol.json` stores persona generation, shared non-secret provider settings,
+and ordered questionnaire or behavioral-task steps. Step history is explicit:
+`reset` starts from the persona prompt, while `inherit` carries the prior step's
+conversation forward. API keys remain runtime-only.
+
+Reusing an experiment ID requires the same protocol fingerprint. `persona_seed`
+and `run_seed` may change between runs; any other change requires a new
+experiment ID. A changed persona seed creates a new immutable cohort, while a
+changed run seed reuses the selected personas.
+
+Inspect and preview persona configuration locally:
+
+```bash
+uv run llm-behavior-lab persona-fields
+uv run llm-behavior-lab persona-preview \
+  --experiment-id pilot-study-one \
+  --persona-count 100 \
+  --seed 123 \
+  --persona-field age \
+  --persona-field country
+```
+
+Add `--json` for machine-readable output. These commands do not create files,
+load provider credentials, or contact a model.
+
 ```bash
 uv run llm-behavior-lab scale-design \
   --experiment-id pilot-study-one \
   --questionnaire bfi_10 \
   --persona-count 100 \
+  --persona-field age \
+  --persona-field country \
   --model openai/gpt-oss-20b \
   --seed 123
 
@@ -145,7 +183,31 @@ Each `design.json` has one discriminated procedure:
 - `task`: task identity and validated task configuration.
 
 Persona materialization and paired or factorial persona protocols are shared by
-both workflows. Multi-procedure studies are intentionally deferred.
+both staged workflows.
+
+These staged `design.json` commands remain supported for existing experiments.
+New multi-procedure studies should use the canonical `protocol-create` workflow.
+
+Canonical protocol artifacts use this layout:
+
+```text
+experiments/{experiment_id}/
+  protocol.json
+  cohorts/cohort-{uuid}/
+    personas.jsonl
+    metadata.json
+    protocol-assignments.jsonl
+  run-protocol-{model}-{timestamp}/
+    run.jsonl
+    steps/{step_id}/
+    conversations/
+```
+
+Use `--step-id` with `scale-score`, `scale-results`, `task-analyze`, and
+`task-results` to operate on a procedure inside a protocol run.
+
+`personas` refuses to replace an existing snapshot. Use `--replace` only when
+intentionally rematerializing the exact persisted design.
 
 ## Questionnaire Definitions
 
@@ -159,6 +221,33 @@ Use `questionnaire-describe` to inspect each instrument's citation, licence,
 response formats, scales, scoring models, and required builder parameters.
 
 ## Python API
+
+Create personas without constructing factory requests directly:
+
+```python
+from pathlib import Path
+
+from llm_behavior_lab import PersonaDesign, create_personas
+from llm_behavior_lab.personas import RandUniformRange
+from llm_behavior_lab.personas.factory import PersonaGenerationConfig
+
+design = PersonaDesign(
+    count=100,
+    seed=123,
+    requested_fields={"age", "country"},
+    generation_config=PersonaGenerationConfig(
+        field_values={
+            "age": RandUniformRange(20, 35),
+            "country": "PL",
+        }
+    ),
+)
+batch = create_personas(Path("."), "pilot-study-one", design)
+```
+
+`list_persona_fields()` reports supported fields and configuration capabilities.
+`preview_persona_creation()` returns the validated factory request without
+creating files.
 
 ```python
 from pathlib import Path

@@ -10,6 +10,8 @@ from llm_behavior_lab.experiments import (
     ProviderDesign,
     ScaleProcedureDesign,
     create_experiment_design,
+    create_personas,
+    load_personas,
 )
 from llm_behavior_lab.main import (
     build_parser,
@@ -69,6 +71,73 @@ def test_parser_accepts_questionnaire_discovery_commands() -> None:
     assert describe_args.command == "questionnaire-describe"
     assert describe_args.questionnaire_id == "bfi_10"
     assert describe_args.json is True
+
+
+def test_parser_accepts_persona_discovery_and_preview_commands() -> None:
+    fields = build_parser().parse_args(["persona-fields", "--json"])
+    preview = build_parser().parse_args(
+        [
+            "persona-preview",
+            "--experiment-id",
+            "pilot-study-one",
+            "--persona-count",
+            "5",
+            "--seed",
+            "7",
+            "--persona-field",
+            "age",
+            "--persona-field",
+            "country",
+            "--json",
+        ]
+    )
+
+    assert fields.command == "persona-fields"
+    assert fields.json is True
+    assert preview.command == "persona-preview"
+    assert preview.persona_count == 5
+    assert preview.persona_fields == ["age", "country"]
+    assert preview.json is True
+
+
+def test_persona_fields_prints_json_without_creating_artifacts(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = main(["persona-fields", "--json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert {entry["id"] for entry in payload} == set(RequestedDemographicField)
+    assert next(entry for entry in payload if entry["id"] == "age")["supports_range"] is True
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_persona_preview_prints_resolved_settings_without_writing(tmp_path: Path, capsys) -> None:
+    result = main(
+        [
+            "persona-preview",
+            "--project-root",
+            str(tmp_path),
+            "--experiment-id",
+            "preview-study-one",
+            "--persona-count",
+            "3",
+            "--seed",
+            "11",
+            "--persona-field",
+            "age",
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["count"] == 3
+    assert payload["seed"] == 11
+    assert payload["requested_fields"] == ["age"]
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_questionnaire_list_prints_human_readable_catalog(capsys) -> None:
@@ -190,6 +259,139 @@ def test_parser_accepts_protocol_file() -> None:
     )
 
     assert args.protocol == Path("protocol.json")
+
+
+def test_scale_design_accepts_requested_persona_fields() -> None:
+    args = build_parser().parse_args(
+        [
+            "scale-design",
+            "--experiment-id",
+            "pilot-study-one",
+            "--questionnaire",
+            "bfi_10",
+            "--persona-field",
+            "age",
+            "--persona-field",
+            "country",
+        ]
+    )
+
+    assert args.persona_fields == ["age", "country"]
+
+
+def test_cli_and_python_persona_creation_are_equivalent(tmp_path: Path, capsys) -> None:
+    cli_root = tmp_path / "cli"
+    python_root = tmp_path / "python"
+    config_path = tmp_path / "persona-config.json"
+    config_path.write_text(
+        '{"field_values": {"country": "PL"}}',
+        encoding="utf-8",
+    )
+    common = [
+        "--experiment-id",
+        "parity-study-one",
+        "--persona-count",
+        "3",
+        "--seed",
+        "7",
+        "--persona-field",
+        "age",
+        "--persona-field",
+        "country",
+        "--persona-config",
+        str(config_path),
+    ]
+
+    assert (
+        main(
+            [
+                "scale-design",
+                "--project-root",
+                str(cli_root),
+                "--questionnaire",
+                "bfi_10",
+                *common,
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "personas",
+                "--project-root",
+                str(cli_root),
+                "--experiment-id",
+                "parity-study-one",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+
+    python_batch = create_personas(
+        python_root,
+        "parity-study-one",
+        PersonaDesign.model_validate(
+            {
+                "count": 3,
+                "seed": 7,
+                "requested_fields": ["age", "country"],
+                "generation_config": {"field_values": {"country": "PL"}},
+            }
+        ),
+    )
+
+    assert load_personas(cli_root, "parity-study-one") == python_batch
+    assert "Created 3 personas at" in output
+    assert "personas.jsonl" in output
+
+
+def test_personas_cli_requires_replace_to_overwrite(tmp_path: Path, capsys) -> None:
+    common = [
+        "--project-root",
+        str(tmp_path),
+        "--experiment-id",
+        "replace-study-one",
+    ]
+    assert main(["scale-design", *common, "--questionnaire", "bfi_10", "--seed", "7"]) == 0
+    capsys.readouterr()
+    assert main(["personas", *common]) == 0
+
+    with pytest.raises(FileExistsError, match="personas already exist"):
+        main(["personas", *common])
+
+    assert main(["personas", *common, "--replace"]) == 0
+
+
+def test_scale_design_rejects_invalid_persona_settings_before_writing(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "persona-config.json"
+    config_path.write_text(
+        '{"field_values": {"country": "PL"}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="configured fields must be requested"):
+        main(
+            [
+                "scale-design",
+                "--project-root",
+                str(tmp_path),
+                "--experiment-id",
+                "invalid-study-one",
+                "--questionnaire",
+                "bfi_10",
+                "--persona-field",
+                "age",
+                "--persona-config",
+                str(config_path),
+            ]
+        )
+
+    assert not (tmp_path / "experiments").exists()
 
 
 def test_parser_accepts_task_workflow_commands() -> None:

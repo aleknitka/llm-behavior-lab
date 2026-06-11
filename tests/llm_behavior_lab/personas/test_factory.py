@@ -13,6 +13,7 @@ from llm_behavior_lab.personas.factory import (
     PersonaGenerationConfig,
     RequestedDemographicField,
 )
+from llm_behavior_lab.personas.value_specs import RandUniformRange
 from llm_behavior_lab.storage import write_persona_batch_jsonl
 
 
@@ -168,17 +169,16 @@ def test_weighted_config_restricts_country_and_affluence_choices() -> None:
                         EuropeanCountry.POLAND.value: 0.75,
                         EuropeanCountry.GERMANY.value: 0.25,
                     },
-                    RequestedDemographicField.AFFLUENCE_LEVEL: {
-                        AffluenceLevel.MIDDLE.value: 1.0
-                    },
+                    RequestedDemographicField.AFFLUENCE_LEVEL: {AffluenceLevel.MIDDLE.value: 1.0},
                 }
             ),
         )
     )
 
-    assert {
-        persona.features.country for persona in batch.personas
-    } <= {EuropeanCountry.POLAND, EuropeanCountry.GERMANY}
+    assert {persona.features.country for persona in batch.personas} <= {
+        EuropeanCountry.POLAND,
+        EuropeanCountry.GERMANY,
+    }
     assert {persona.features.affluence_level for persona in batch.personas} == {
         AffluenceLevel.MIDDLE
     }
@@ -193,6 +193,198 @@ def test_weighted_config_rejects_unknown_enum_value() -> None:
                 }
             }
         )
+
+
+def test_fixed_field_values_materialize_unchanged() -> None:
+    batch = PersonaFactory().create_demographics_batch(
+        PersonaFactoryRequest(
+            count=2,
+            requested_fields={
+                RequestedDemographicField.AGE,
+                RequestedDemographicField.COUNTRY,
+                RequestedDemographicField.HAS_CHILDREN,
+            },
+            experiment_id="fixed-values-one",
+            generation_config=PersonaGenerationConfig(
+                field_values={
+                    RequestedDemographicField.AGE: 25,
+                    RequestedDemographicField.COUNTRY: "GB",
+                    RequestedDemographicField.HAS_CHILDREN: False,
+                }
+            ),
+        )
+    )
+
+    assert [
+        persona.features.model_dump(mode="json", exclude_none=True) for persona in batch.personas
+    ] == [
+        {"age": 25, "country": "GB", "has_children": False},
+        {"age": 25, "country": "GB", "has_children": False},
+    ]
+
+
+def test_generated_field_values_materialize_as_deterministic_integers() -> None:
+    request = PersonaFactoryRequest(
+        count=5,
+        requested_fields={RequestedDemographicField.AGE},
+        seed=17,
+        experiment_id="range-values-one",
+        generation_config=PersonaGenerationConfig(
+            field_values={
+                RequestedDemographicField.AGE: RandUniformRange(20, 25),
+            }
+        ),
+    )
+
+    first = PersonaFactory().create_demographics_batch(request)
+    second = PersonaFactory().create_demographics_batch(request)
+
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
+    assert all(
+        isinstance(persona.features.age, int) and 20 <= persona.features.age <= 25
+        for persona in first.personas
+    )
+
+
+def test_sampled_age_and_dependants_drive_dependent_generation() -> None:
+    batch = PersonaFactory().create_demographics_batch(
+        PersonaFactoryRequest(
+            count=20,
+            requested_fields={
+                RequestedDemographicField.AGE,
+                RequestedDemographicField.EDUCATION_LEVEL,
+                RequestedDemographicField.EMPLOYMENT_STATUS,
+                RequestedDemographicField.NUMBER_OF_DEPENDANTS,
+                RequestedDemographicField.HAS_CHILDREN,
+                RequestedDemographicField.HOUSEHOLD_SIZE,
+            },
+            seed=29,
+            experiment_id="dependent-range-one",
+            generation_config=PersonaGenerationConfig(
+                field_values={
+                    RequestedDemographicField.AGE: RandUniformRange(15, 15),
+                    RequestedDemographicField.NUMBER_OF_DEPENDANTS: RandUniformRange(0, 0),
+                }
+            ),
+        )
+    )
+
+    for persona in batch.personas:
+        features = persona.features
+        assert features.age == 15
+        assert features.education_level in {"primary", "secondary", "other"}
+        assert features.employment_status in {"student", "unemployed", "caregiver", "other"}
+        assert features.number_of_dependants == 0
+        assert features.has_children is False
+        assert features.household_size is not None
+        assert features.household_size >= 1
+
+
+def test_field_value_json_parses_range_generator() -> None:
+    config = PersonaGenerationConfig.model_validate(
+        {
+            "field_values": {
+                "age": {
+                    "type": "rand_uniform_range",
+                    "left": 20,
+                    "right": 25,
+                }
+            }
+        }
+    )
+
+    assert config.field_values[RequestedDemographicField.AGE] == RandUniformRange(20, 25)
+    assert config.model_dump(mode="json")["field_values"]["age"] == {
+        "type": "rand_uniform_range",
+        "left": 20,
+        "right": 25,
+    }
+
+
+@pytest.mark.parametrize(
+    ("request_updates", "message"),
+    [
+        ({"seed": None}, "seed"),
+        ({"requested_fields": {"country"}}, "requested"),
+        (
+            {
+                "generation_config": {
+                    "field_probabilities": {"country": {"PL": 1.0}},
+                }
+            },
+            "requested",
+        ),
+        (
+            {
+                "generation_config": {
+                    "field_values": {
+                        "age": {
+                            "type": "rand_uniform_range",
+                            "left": 20,
+                            "right": 25,
+                        }
+                    },
+                    "field_probabilities": {"age": {"20": 1.0}},
+                }
+            },
+            "both",
+        ),
+        (
+            {
+                "generation_config": {
+                    "field_values": {
+                        "country": {"type": "rand_uniform_range", "left": 1, "right": 2}
+                    }
+                }
+            },
+            "country",
+        ),
+        (
+            {
+                "generation_config": {
+                    "field_values": {
+                        "age": {"type": "rand_uniform_range", "left": 121, "right": 122}
+                    }
+                }
+            },
+            "age",
+        ),
+    ],
+)
+def test_field_value_configuration_rejects_invalid_inputs(
+    request_updates: dict[str, Any], message: str
+) -> None:
+    payload: dict[str, Any] = {
+        "count": 1,
+        "requested_fields": {"age"},
+        "seed": 11,
+        "experiment_id": "invalid-range-one",
+        "generation_config": {
+            "field_values": {"age": {"type": "rand_uniform_range", "left": 20, "right": 25}}
+        },
+    }
+    payload.update(request_updates)
+
+    with pytest.raises(ValidationError, match=message):
+        PersonaFactoryRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "field_values",
+    [
+        {"age": 15, "number_of_dependants": 1},
+        {"age": 15, "has_children": True},
+        {"number_of_dependants": 2, "has_children": False},
+        {"number_of_dependants": 2, "household_size": 2},
+        {"age": 20, "education_level": "doctorate"},
+        {"age": 20, "employment_status": "retired"},
+    ],
+)
+def test_fixed_field_values_reject_impossible_demographic_combinations(
+    field_values: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="incompatible"):
+        PersonaGenerationConfig.model_validate({"field_values": field_values})
 
 
 def test_age_group_is_not_a_supported_requested_field() -> None:

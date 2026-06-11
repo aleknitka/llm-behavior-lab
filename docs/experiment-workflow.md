@@ -4,6 +4,52 @@ This guide describes the complete lifecycle from a study design to scored, tabul
 results. Each stage is explicit so an experiment can be inspected, reproduced, or
 restarted without silently regenerating earlier inputs.
 
+## Canonical Protocol Workflow
+
+New experiments can define persona creation, provider settings, questionnaires,
+and behavioral tasks in one immutable `protocol.json`:
+
+```bash
+uv run llm-behavior-lab protocol-create --file study.json
+```
+
+Each ordered step declares `history: reset` or `history: inherit`. Provider
+credentials are runtime-only and are never stored in the protocol.
+
+When an experiment already exists, an interactive terminal confirms the rerun
+and cohort choice. Scripts must be explicit:
+
+```bash
+uv run llm-behavior-lab protocol-create \
+  --file study.json \
+  --new-run \
+  --cohort-id cohort-00000000-0000-4000-8000-000000000000 \
+  --run-seed 456
+```
+
+`--cohort-id` reuses the exact persona snapshot. `--persona-seed` creates a new
+cohort and cannot be combined with `--cohort-id`. Seed defaults do not define
+protocol identity; changing any other configuration requires a new experiment
+ID.
+
+```text
+experiments/{experiment_id}/
+  protocol.json
+  cohorts/cohort-{uuid}/
+    personas.jsonl
+    metadata.json
+    protocol-assignments.jsonl
+  run-protocol-{model}-{timestamp}/
+    run.jsonl
+    steps/{step_id}/
+    conversations/
+```
+
+Run metadata records the protocol fingerprint, cohort ID, effective seeds,
+provider snapshot, and step results. Use `--step-id` with scoring and task
+analysis commands. The staged `design.json` workflow below remains supported for
+existing single-procedure and factor-only experiments.
+
 ## 0. Discover a Questionnaire
 
 List available instruments:
@@ -27,6 +73,22 @@ Discovery is local and read-only. It does not load provider credentials, contact
 an API, or create files. Use the exact stable ID shown by discovery; shorthand
 aliases such as `bfi10` and `pdmi` are not accepted.
 
+Inspect persona fields and preview the resolved generation request:
+
+```bash
+uv run llm-behavior-lab persona-fields
+uv run llm-behavior-lab persona-preview \
+  --experiment-id pilot-study-one \
+  --persona-count 100 \
+  --seed 123 \
+  --persona-field age \
+  --persona-field country
+```
+
+Add `--json` for machine-readable output. Preview validates the same
+`PersonaDesign` and `PersonaFactoryRequest` used during materialization without
+creating an experiment directory.
+
 ## 1. Design
 
 Create a validated manifest:
@@ -36,6 +98,8 @@ uv run llm-behavior-lab scale-design \
   --experiment-id pilot-study-one \
   --questionnaire bfi_10 \
   --persona-count 100 \
+  --persona-field age \
+  --persona-field country \
   --model openai/gpt-oss-20b \
   --base-url http://localhost:1234/v1 \
   --temperature 0 \
@@ -78,9 +142,27 @@ protocol design, it also writes:
 - `protocol.json`
 - `protocol_assignments.jsonl`
 
-The command refuses to overwrite an existing persona batch. Delete or archive the
-whole experiment directory before intentionally creating a different design with the
-same experiment ID.
+The command refuses to overwrite an existing persona batch. Use `--replace` only
+when intentionally rematerializing the persisted design; it never changes
+`design.json`.
+
+Python callers use the same path:
+
+```python
+from pathlib import Path
+
+from llm_behavior_lab import PersonaDesign, create_personas
+
+batch = create_personas(
+    Path("."),
+    "pilot-study-one",
+    PersonaDesign(
+        count=100,
+        seed=123,
+        requested_fields={"age", "country"},
+    ),
+)
+```
 
 ## 3. Execution
 

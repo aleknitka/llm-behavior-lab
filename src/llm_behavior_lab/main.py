@@ -33,13 +33,28 @@ from llm_behavior_lab.experiments import (
     ScaleProcedureDesign,
     TaskProcedureDesign,
     create_experiment_design,
+    list_persona_fields,
     load_experiment_design,
     load_personas,
     materialize_personas,
+    preview_persona_creation,
 )
 from llm_behavior_lab.models import ModelSettings, ProviderCapabilities
-from llm_behavior_lab.personas.factory import PersonaGenerationConfig
-from llm_behavior_lab.protocols import ExperimentProtocol, ProtocolAssignment
+from llm_behavior_lab.personas.factory import (
+    PersonaGenerationConfig,
+    RequestedDemographicField,
+)
+from llm_behavior_lab.protocol_runs import (
+    create_protocol_experiment,
+    create_protocol_run,
+    load_protocol_experiment,
+)
+from llm_behavior_lab.protocols import (
+    ExperimentProtocol,
+    ProtocolAssignment,
+    ProtocolQuestionnaireStep,
+    UnifiedExperimentProtocol,
+)
 from llm_behavior_lab.questionnaires.catalog import (
     QuestionnaireDescriptor,
     describe_questionnaire,
@@ -75,6 +90,18 @@ def _common_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--log-level", choices=LOG_LEVELS, default="INFO")
 
 
+def _persona_design_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--persona-count", type=int, default=100)
+    parser.add_argument("--persona-config", type=Path)
+    parser.add_argument(
+        "--persona-field",
+        dest="persona_fields",
+        action="append",
+        choices=[field.value for field in RequestedDemographicField],
+    )
+    parser.add_argument("--seed", type=int)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="llm-behavior-lab")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -91,6 +118,34 @@ def build_parser() -> argparse.ArgumentParser:
     questionnaire_describe.add_argument("questionnaire_id")
     questionnaire_describe.add_argument("--json", action="store_true")
 
+    persona_fields = commands.add_parser(
+        "persona-fields",
+        help="List supported persona fields without creating files.",
+    )
+    persona_fields.add_argument("--json", action="store_true")
+
+    persona_preview = commands.add_parser(
+        "persona-preview",
+        help="Preview validated persona settings without creating files.",
+    )
+    _common_parser(persona_preview)
+    persona_preview.add_argument("--experiment-id", required=True)
+    _persona_design_parser(persona_preview)
+    persona_preview.add_argument("--json", action="store_true")
+
+    protocol_create = commands.add_parser(
+        "protocol-create",
+        help="Create a canonical experiment protocol or start another matching run.",
+    )
+    _common_parser(protocol_create)
+    protocol_create.add_argument("--file", type=Path, required=True)
+    protocol_create.add_argument("--new-run", action="store_true")
+    cohort = protocol_create.add_mutually_exclusive_group()
+    cohort.add_argument("--cohort-id")
+    cohort.add_argument("--persona-seed", type=int)
+    protocol_create.add_argument("--run-seed", type=int)
+    protocol_create.add_argument("--api-key")
+
     design = commands.add_parser(
         "scale-design", help="Create a validated questionnaire experiment manifest."
     )
@@ -98,14 +153,12 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--experiment-id", required=True)
     design.add_argument("--questionnaire", required=True)
     design.add_argument("--questionnaire-param", action="append", default=[])
-    design.add_argument("--persona-count", type=int, default=100)
-    design.add_argument("--persona-config", type=Path)
+    _persona_design_parser(design)
     design.add_argument("--protocol", type=Path)
     design.add_argument("--model", default=DEFAULT_MODEL)
     design.add_argument("--base-url", default=DEFAULT_API_BASE_URL)
     design.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     design.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
-    design.add_argument("--seed", type=int)
     design.add_argument("--scoring-model-id")
     design.add_argument("--context")
     design.add_argument("--logprobs", action=argparse.BooleanOptionalAction, default=True)
@@ -114,6 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
     personas = commands.add_parser("personas", help="Materialize personas from a design.")
     _common_parser(personas)
     personas.add_argument("--experiment-id", required=True)
+    personas.add_argument("--replace", action="store_true")
 
     task_design = commands.add_parser(
         "task-design", help="Create a validated behavioral-task experiment manifest."
@@ -122,14 +176,12 @@ def build_parser() -> argparse.ArgumentParser:
     task_design.add_argument("--experiment-id", required=True)
     task_design.add_argument("--task", required=True)
     task_design.add_argument("--task-config", type=Path)
-    task_design.add_argument("--persona-count", type=int, default=100)
-    task_design.add_argument("--persona-config", type=Path)
+    _persona_design_parser(task_design)
     task_design.add_argument("--protocol", type=Path)
     task_design.add_argument("--model", default=DEFAULT_MODEL)
     task_design.add_argument("--base-url", default=DEFAULT_API_BASE_URL)
     task_design.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     task_design.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
-    task_design.add_argument("--seed", type=int)
     task_design.add_argument("--logprobs", action=argparse.BooleanOptionalAction, default=True)
     task_design.add_argument("--structured-outputs", action="store_true", default=False)
 
@@ -155,12 +207,14 @@ def build_parser() -> argparse.ArgumentParser:
     _common_parser(score)
     score.add_argument("--experiment-id", required=True)
     score.add_argument("--run-id")
+    score.add_argument("--step-id")
     score.add_argument("--scoring-model-id")
 
     results = commands.add_parser("scale-results", help="Export scored scale results.")
     _common_parser(results)
     results.add_argument("--experiment-id", required=True)
     results.add_argument("--run-id")
+    results.add_argument("--step-id")
     results.add_argument("--scoring-directory")
 
     task_analyze = commands.add_parser(
@@ -169,6 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
     _common_parser(task_analyze)
     task_analyze.add_argument("--experiment-id", required=True)
     task_analyze.add_argument("--run-id")
+    task_analyze.add_argument("--step-id")
     task_analyze.add_argument("--block-size", type=int, default=20)
 
     task_results = commands.add_parser(
@@ -177,6 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     _common_parser(task_results)
     task_results.add_argument("--experiment-id", required=True)
     task_results.add_argument("--run-id")
+    task_results.add_argument("--step-id")
     task_results.add_argument("--analysis-directory")
     return parser
 
@@ -262,6 +318,48 @@ def load_protocol(path: Path) -> ExperimentProtocol:
     return ExperimentProtocol.model_validate_json(path.read_text(encoding="utf-8"))
 
 
+def load_unified_protocol(path: Path) -> UnifiedExperimentProtocol:
+    return UnifiedExperimentProtocol.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def _persona_design_from_args(args: argparse.Namespace) -> PersonaDesign:
+    requested_fields = (
+        set(args.persona_fields)
+        if args.persona_fields is not None
+        else set(RequestedDemographicField)
+    )
+    return PersonaDesign(
+        count=args.persona_count,
+        seed=args.seed,
+        requested_fields=requested_fields,
+        generation_config=load_persona_config(args.persona_config),
+    )
+
+
+def _print_persona_fields(*, as_json: bool) -> None:
+    descriptors = list_persona_fields()
+    if as_json:
+        print(
+            json.dumps(
+                [descriptor.model_dump(mode="json") for descriptor in descriptors],
+                indent=2,
+            )
+        )
+        return
+    for descriptor in descriptors:
+        capabilities = ["fixed"]
+        if descriptor.supports_range:
+            capabilities.append("range")
+        if descriptor.supports_probabilities:
+            capabilities.append("probabilities")
+        allowed = (
+            f"; values: {', '.join(descriptor.allowed_values)}" if descriptor.allowed_values else ""
+        )
+        print(
+            f"{descriptor.id.value}: {descriptor.value_type} ({', '.join(capabilities)}{allowed})"
+        )
+
+
 def resolve_provider_config(
     cli_base_url: str | None,
     cli_api_key: str | None,
@@ -296,6 +394,21 @@ def _run_root(project_root: Path, experiment_id: str, run_id: str | None) -> Pat
     return runs[0]
 
 
+def _procedure_root(
+    project_root: Path,
+    experiment_id: str,
+    run_id: str | None,
+    step_id: str | None,
+) -> Path:
+    run_root = _run_root(project_root, experiment_id, run_id)
+    if step_id is None:
+        return run_root
+    step_root = run_root / "steps" / step_id
+    if not step_root.is_dir():
+        raise ValueError(f"protocol step not found: {step_id}")
+    return step_root
+
+
 def _assignment_metadata(project_root: Path, experiment_id: str):
     path = project_root / "experiments" / experiment_id / "protocol_assignments.jsonl"
     if not path.exists():
@@ -325,15 +438,81 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.json,
         )
         return 0
+    if args.command == "persona-fields":
+        _print_persona_fields(as_json=args.json)
+        return 0
+    if args.command == "persona-preview":
+        preview = preview_persona_creation(
+            args.experiment_id,
+            _persona_design_from_args(args),
+        )
+        if args.json:
+            payload = preview.model_dump(mode="json")
+            payload["requested_fields"] = sorted(payload["requested_fields"])
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"Experiment: {preview.experiment_id}")
+            print(f"Persona count: {preview.count}")
+            print(f"Seed: {preview.seed}")
+            print(
+                "Requested fields: "
+                + ", ".join(sorted(field.value for field in preview.requested_fields))
+            )
+            print(preview.generation_config.model_dump_json(indent=2))
+        return 0
+    if args.command == "protocol-create":
+        protocol = load_unified_protocol(args.file)
+        experiment_root = (
+            args.project_root / "experiments" / protocol.experiment_id
+        )
+        if not experiment_root.exists():
+            created = create_protocol_experiment(args.project_root, protocol)
+            print(created.protocol_path)
+            return 0
+        load_protocol_experiment(args.project_root, protocol.experiment_id)
+        if not args.new_run:
+            if not sys.stdin.isatty():
+                raise ValueError(
+                    "experiment already exists; non-interactive callers must pass --new-run"
+                )
+            answer = input("Protocol matches an existing experiment. Start another run? [y/N] ")
+            if answer.strip().lower() not in {"y", "yes"}:
+                return 0
+        cohort_id = args.cohort_id
+        persona_seed = args.persona_seed
+        if sys.stdin.isatty() and cohort_id is None and persona_seed is None:
+            answer = input("Reuse an existing persona cohort? [Y/n] ")
+            if answer.strip().lower() in {"n", "no"}:
+                seed_text = input(
+                    f"Persona seed [{protocol.persona_seed}]: "
+                ).strip()
+                persona_seed = (
+                    int(seed_text) if seed_text else protocol.persona_seed
+                )
+        run_seed = args.run_seed
+        if sys.stdin.isatty() and run_seed is None:
+            seed_text = input(f"Run seed [{protocol.run_seed}]: ").strip()
+            run_seed = int(seed_text) if seed_text else protocol.run_seed
+        runtime = resolve_provider_config(
+            protocol.provider.base_url,
+            args.api_key,
+            load_env_file(args.project_root),
+        )
+        result = create_protocol_run(
+            args.project_root,
+            protocol,
+            cohort_id=cohort_id,
+            persona_seed=persona_seed,
+            run_seed=run_seed,
+            api_key=runtime.api_key,
+        )
+        print(result.run_id)
+        return 0
     if args.command in {"scale-design", "task-design"}:
         protocol = load_protocol(args.protocol) if args.protocol else None
         personas = None
         if protocol is None:
-            personas = PersonaDesign(
-                count=args.persona_count,
-                seed=args.seed,
-                generation_config=load_persona_config(args.persona_config),
-            )
+            personas = _persona_design_from_args(args)
         if args.command == "scale-design":
             procedure = ScaleProcedureDesign(
                 questionnaire_id=args.questionnaire,
@@ -379,8 +558,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "personas":
         design = load_experiment_design(args.project_root, args.experiment_id)
-        batch = materialize_personas(args.project_root, design)
-        print(f"Created {len(batch.personas)} personas")
+        batch = materialize_personas(
+            args.project_root,
+            design,
+            replace=args.replace,
+        )
+        path = args.project_root / "experiments" / args.experiment_id / "personas.jsonl"
+        print(f"Created {len(batch.personas)} personas at {path}")
         return 0
     if args.command in {"scale-run", "task-run"}:
         design = load_experiment_design(args.project_root, args.experiment_id)
@@ -447,27 +631,46 @@ def main(argv: list[str] | None = None) -> int:
         print(result.run_id)
         return 0
     if args.command == "scale-score":
-        design = load_experiment_design(args.project_root, args.experiment_id)
-        if not isinstance(design.procedure, ScaleProcedureDesign):
-            raise ValueError("experiment design is not a scale procedure")
-        run_root = _run_root(args.project_root, args.experiment_id, args.run_id)
-        scoring_model_id = (
-            args.scoring_model_id or design.procedure.scoring_model_id
+        if args.step_id is None:
+            design = load_experiment_design(args.project_root, args.experiment_id)
+            if not isinstance(design.procedure, ScaleProcedureDesign):
+                raise ValueError("experiment design is not a scale procedure")
+            default_scoring_model_id = design.procedure.scoring_model_id
+        else:
+            protocol = load_protocol_experiment(
+                args.project_root, args.experiment_id
+            ).protocol
+            step = next(
+                (step for step in protocol.steps if step.id == args.step_id),
+                None,
+            )
+            if not isinstance(step, ProtocolQuestionnaireStep):
+                raise ValueError("protocol step is not a questionnaire")
+            default_scoring_model_id = step.scoring_model_id
+        run_root = _procedure_root(
+            args.project_root, args.experiment_id, args.run_id, args.step_id
         )
+        scoring_model_id = args.scoring_model_id or default_scoring_model_id
         result = score_run(run_root, scoring_model_id)
         print(result.output_root)
         return 0
     if args.command == "scale-results":
-        run_root = _run_root(args.project_root, args.experiment_id, args.run_id)
+        run_root = _procedure_root(
+            args.project_root, args.experiment_id, args.run_id, args.step_id
+        )
         result = export_results(run_root, args.scoring_directory)
         print(result.output_root)
         return 0
     if args.command == "task-analyze":
-        run_root = _run_root(args.project_root, args.experiment_id, args.run_id)
+        run_root = _procedure_root(
+            args.project_root, args.experiment_id, args.run_id, args.step_id
+        )
         result = analyze_task_run(run_root, args.block_size)
         print(result.output_root)
         return 0
-    run_root = _run_root(args.project_root, args.experiment_id, args.run_id)
+    run_root = _procedure_root(
+        args.project_root, args.experiment_id, args.run_id, args.step_id
+    )
     result = export_task_results(run_root, args.analysis_directory)
     print(result.output_root)
     return 0
