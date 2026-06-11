@@ -229,12 +229,25 @@ def _provider_snapshot(settings: ModelSettings) -> ProviderSnapshot:
         model=settings.model,
         temperature=settings.temperature,
         timeout_seconds=settings.timeout_seconds,
+        max_attempts=settings.max_attempts,
+        initial_backoff_seconds=settings.initial_backoff_seconds,
+        max_backoff_seconds=settings.max_backoff_seconds,
+        max_concurrency=settings.max_concurrency,
         supports_structured_outputs=settings.capabilities.supports_structured_outputs,
         supports_logprobs=settings.capabilities.supports_logprobs,
     )
 
 
-def _response_status(records: Sequence[ItemResponseRecord]) -> ResponseStatus:
+def _response_status(
+    records: Sequence[ItemResponseRecord],
+    *,
+    expected_item_count: int,
+    cancelled: bool = False,
+) -> ResponseStatus:
+    if cancelled:
+        return ResponseStatus.CANCELLED
+    if len(records) < expected_item_count:
+        return ResponseStatus.PARTIAL
     if any(record.status == ResponseStatus.FAILED for record in records):
         return ResponseStatus.FAILED
     if any(record.status == ResponseStatus.INVALID for record in records):
@@ -261,7 +274,11 @@ def _run_record(
     completed_at: datetime,
     records: Sequence[ItemResponseRecord],
     output_paths: dict[str, str],
+    *,
+    cancelled: bool = False,
 ) -> RunRecord:
+    effective_records = latest_item_attempts(records)
+    expected_item_count = len(questionnaire.items) * persona_count
     return RunRecord(
         experiment_id=experiment_id,
         session_id=session_id,
@@ -278,9 +295,17 @@ def _run_record(
         provider=_provider_snapshot(settings),
         started_at=started_at,
         completed_at=completed_at,
-        status=_response_status(records),
-        error_count=sum(1 for record in records if record.status == ResponseStatus.FAILED),
-        item_count=len(records),
+        status=_response_status(
+            effective_records,
+            expected_item_count=expected_item_count,
+            cancelled=cancelled,
+        ),
+        error_count=sum(
+            1
+            for record in effective_records
+            if record.status == ResponseStatus.FAILED
+        ),
+        item_count=len(effective_records),
         output_paths=output_paths,
         metadata={"scoring_model_id": None, "base_seed": settings.seed},
     )
@@ -601,7 +626,10 @@ def run_persona_questionnaire_batch(
             context=context,
         )
         all_records.extend(records)
-        run_status = _response_status(records)
+        run_status = _response_status(
+            records,
+            expected_item_count=len(questionnaire.items),
+        )
         statuses.append(run_status)
         logger.info(
             "Finished persona run {index}/{persona_count} run_id={run_id} "
@@ -877,7 +905,12 @@ def run_protocol_experiment(
             context=context,
         )
         all_records.extend(records)
-        statuses.append(_response_status(records))
+        statuses.append(
+            _response_status(
+                records,
+                expected_item_count=len(questionnaire.items),
+            )
+        )
 
     batch_status = ResponseStatus.COMPLETED
     if ResponseStatus.FAILED in statuses:

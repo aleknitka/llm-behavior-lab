@@ -7,9 +7,19 @@ from loguru import logger
 from llm_behavior_lab.models import LlmQuestionResult, ModelSettings, Persona, ProviderCapabilities
 from llm_behavior_lab.questionnaires.base.scale import Questionnaire
 from llm_behavior_lab.questionnaires.bfi10 import BFI_10
-from llm_behavior_lab.responses.base import LikertAnswerValue, ResponseStatus
+from llm_behavior_lab.responses.base import (
+    ChatMessage,
+    ItemResponseRecord,
+    LikertAnswerValue,
+    ResponseStatus,
+)
 from llm_behavior_lab.responses.item_ledgers import load_item_ledger
-from llm_behavior_lab.runner import run_questionnaire, run_questionnaire_async
+from llm_behavior_lab.runner import (
+    _provider_snapshot,
+    _response_status,
+    run_questionnaire,
+    run_questionnaire_async,
+)
 
 TEST_PERSONA = Persona(
     persona_id="test_persona",
@@ -454,6 +464,9 @@ def test_run_questionnaire_requires_retry_failed_for_unsuccessful_items(tmp_path
     assert len(retry_client.calls) == len(BFI_10.items)
     assert {record.status for record in retried} == {ResponseStatus.COMPLETED}
     assert len(load_item_ledger(response_path)) == len(BFI_10.items) * 2
+    run_record = json.loads((response_path.parents[1] / "run.json").read_text())
+    assert run_record["item_count"] == len(BFI_10.items)
+    assert run_record["error_count"] == 0
 
 
 @pytest.mark.anyio
@@ -502,3 +515,70 @@ async def test_run_questionnaire_async_resumes_with_initial_history(tmp_path) ->
     assert len(client.calls) == len(BFI_10.items) - 1
     assert client.calls[0][0] == initial_history[0]
     assert client.calls[0][1]["content"].startswith(BFI_10.items[0].text)
+
+
+def test_response_status_uses_expected_effective_units() -> None:
+    record = _record_for_status(ResponseStatus.COMPLETED)
+
+    assert (
+        _response_status([record], expected_item_count=2)
+        is ResponseStatus.PARTIAL
+    )
+    assert (
+        _response_status([record], expected_item_count=1, cancelled=True)
+        is ResponseStatus.CANCELLED
+    )
+    assert (
+        _response_status(
+            [_record_for_status(ResponseStatus.FAILED)],
+            expected_item_count=1,
+        )
+        is ResponseStatus.FAILED
+    )
+    assert (
+        _response_status(
+            [_record_for_status(ResponseStatus.INVALID)],
+            expected_item_count=1,
+        )
+        is ResponseStatus.INVALID
+    )
+    assert (
+        _response_status([record], expected_item_count=1)
+        is ResponseStatus.COMPLETED
+    )
+
+
+def _record_for_status(status: ResponseStatus) -> ItemResponseRecord:
+    return ItemResponseRecord(
+        subject_id="subject-1",
+        session_id="session-1",
+        run_id="run-1",
+        questionnaire_id="example",
+        questionnaire_version="1.0",
+        item_id="item-1",
+        item_order=1,
+        item_text="Item",
+        response_format_type="likert",
+        messages=[ChatMessage(role="user", content="Question")],
+        status=status,
+    )
+
+
+def test_provider_snapshot_includes_execution_policy() -> None:
+    snapshot = _provider_snapshot(
+        ModelSettings(
+            model="test",
+            provider_base_url="http://localhost",
+            temperature=0,
+            timeout_seconds=10,
+            max_attempts=5,
+            initial_backoff_seconds=0.5,
+            max_backoff_seconds=8,
+            max_concurrency=6,
+        )
+    )
+
+    assert snapshot.max_attempts == 5
+    assert snapshot.initial_backoff_seconds == 0.5
+    assert snapshot.max_backoff_seconds == 8
+    assert snapshot.max_concurrency == 6
