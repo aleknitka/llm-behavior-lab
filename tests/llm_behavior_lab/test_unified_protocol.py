@@ -111,7 +111,10 @@ def test_create_protocol_experiment_writes_immutable_protocol_and_first_cohort(
     experiment_root = tmp_path / "experiments" / "unified-study-one"
     assert created.protocol_path == experiment_root / "protocol.json"
     assert created.cohort_id.startswith("cohort-")
-    assert (experiment_root / "cohorts" / created.cohort_id / "personas.jsonl").exists()
+    assert (experiment_root / "cohorts" / created.cohort_id / "personas.json").exists()
+    assert (
+        experiment_root / "cohorts" / created.cohort_id / "protocol-assignments.json"
+    ).exists()
     metadata = json.loads(
         (experiment_root / "cohorts" / created.cohort_id / "metadata.json").read_text()
     )
@@ -161,7 +164,7 @@ def test_explicit_cohort_reuse_records_the_cohorts_actual_persona_seed(
         execute=False,
     )
 
-    row = json.loads((reused.run_root / "run.jsonl").read_text())
+    row = json.loads((reused.run_root / "run.json").read_text())
     assert row["metadata"]["persona_seed"] == 12
 
 
@@ -196,7 +199,7 @@ def test_protocol_run_records_effective_seeds_cohort_and_step_results(
         api_key="test-key",
     )
 
-    row = json.loads((result.run_root / "run.jsonl").read_text())
+    row = json.loads((result.run_root / "run.json").read_text())
     assert row["metadata"]["protocol_fingerprint"] == protocol_fingerprint(_protocol())
     assert row["metadata"]["cohort_id"] == created.cohort_id
     assert row["metadata"]["persona_seed"] == 11
@@ -259,7 +262,7 @@ def test_interactive_rerun_prompts_for_optional_run_seed(
 
     experiment_root = tmp_path / "experiments" / "unified-study-one"
     run_root = next(experiment_root.glob("run-protocol-*"))
-    row = json.loads((run_root / "run.jsonl").read_text())
+    row = json.loads((run_root / "run.json").read_text())
     assert row["metadata"]["run_seed"] == 33
 
 

@@ -189,11 +189,11 @@ def _(
         raise RuntimeError("expected exactly one completed run")
     run_root = run_roots[0]
     results_root = run_root / "results" / "default-1.0"
-    return results_root, run_root
+    return experiment_root, results_root, run_root
 
 
 @app.cell
-def _(json, mo, results_root, run_root):
+def _(experiment_root, json, mo, results_root, run_root):
     summary_path = results_root / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     scale_rows = summary["scales"]
@@ -204,9 +204,16 @@ def _(json, mo, results_root, run_root):
                 f"""
                 ## Artifacts
 
+                - Personas: `{experiment_root / "personas.json"}`
+                - Base personas: `{experiment_root / "base_personas.json"}`
+                - Assignments: `{experiment_root / "protocol_assignments.json"}`
+                - Experiment run index: `{experiment_root / "metadata.json"}`
                 - Run: `{run_root}`
+                - Run manifest: `{run_root / "run.json"}`
+                - Item ledgers: `{run_root / "responses"}`
                 - Scores: `{run_root / "scoring" / "default-1.0"}`
                 - Results: `{results_root}`
+                - Persona-enriched responses: `{results_root / "responses.csv"}`
                 - Summary: `{summary_path}`
                 """
             ),

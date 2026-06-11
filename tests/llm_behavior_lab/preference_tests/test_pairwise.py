@@ -139,7 +139,7 @@ def test_run_pairwise_preference_test_writes_records_and_maps_choice(tmp_path) -
     assert len(rows) == 3
     assert rows[0]["selected_stimulus_id"] == records[0].selected_stimulus_id
     assert (run_root / "experiment.json").exists()
-    assert (run_root / "run.jsonl").exists()
+    assert (run_root / "run.json").exists()
 
 
 def test_run_pairwise_preference_test_marks_invalid_answers(tmp_path) -> None:
@@ -195,9 +195,11 @@ def test_run_pairwise_preference_batch_writes_one_run_for_generated_personas(tmp
     assert len(result.runs) == 1
     assert result.runs[0].item_count == len(experiment.trials) * 2
     run_root = tmp_path / "experiments" / "pref-study-one" / result.runs[0].run_id
-    assert (run_root / "run.jsonl").read_text(encoding="utf-8").count("\n") == 1
+    assert json.loads((run_root / "run.json").read_text(encoding="utf-8"))[
+        "run_id"
+    ] == result.runs[0].run_id
     assert len(list((run_root / "responses").glob("*.jsonl"))) == 2
-    assert (tmp_path / "experiments" / "pref-study-one" / "personas.jsonl").exists()
+    assert (tmp_path / "experiments" / "pref-study-one" / "personas.json").exists()
 
 
 def test_summarize_pairwise_preferences_counts_wins(tmp_path) -> None:

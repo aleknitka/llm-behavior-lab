@@ -36,8 +36,10 @@ from llm_behavior_lab.storage import (
     normalize_prefixed_uuid,
     resolve_experiment_paths,
     slugify_model_name,
+    update_experiment_metadata,
     validate_experiment_id,
-    write_persona_batch_jsonl,
+    write_json_document,
+    write_persona_batch,
 )
 
 Message = dict[str, str]
@@ -119,8 +121,8 @@ def run_pairwise_preference_test(
             "experiment": str(experiment_path),
         },
     )
-    append_jsonl_record(paths.run_path, run_record)
-    append_jsonl_record(paths.metadata_path, run_record)
+    write_json_document(paths.run_path, run_record)
+    update_experiment_metadata(paths.metadata_path, run_record)
     return records
 
 
@@ -147,7 +149,7 @@ def run_pairwise_preference_batch(
             generation_config=persona_config or PersonaGenerationConfig(),
         )
     )
-    write_persona_batch_jsonl(project_root, personas)
+    write_persona_batch(project_root, personas)
     run_settings = settings.model_copy(
         update={"seed": settings.seed if settings.seed is not None else seed}
     )
@@ -201,8 +203,8 @@ def run_pairwise_preference_batch(
             "experiment": str(experiment_path),
         },
     )
-    append_jsonl_record(paths.run_path, run_record)
-    append_jsonl_record(paths.metadata_path, run_record)
+    write_json_document(paths.run_path, run_record)
+    update_experiment_metadata(paths.metadata_path, run_record)
     return PreferenceBatchRunResult(
         experiment_id=resolved_experiment_id,
         session_id=session_id,
@@ -341,8 +343,7 @@ def _next_preference_run_id(
 
 
 def _write_experiment_copy(path: Path, experiment: PairwisePreferenceExperiment) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(experiment.model_dump_json(indent=2), encoding="utf-8")
+    write_json_document(path, experiment)
 
 
 def _runtime_persona_from_generated(persona: Any) -> Persona:

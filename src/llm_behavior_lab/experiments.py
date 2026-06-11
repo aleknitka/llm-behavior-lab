@@ -12,12 +12,18 @@ from llm_behavior_lab.personas.factory import (
     PersonaGenerationConfig,
     RequestedDemographicField,
 )
-from llm_behavior_lab.protocols import ExperimentProtocol, expand_protocol_personas
+from llm_behavior_lab.protocols import (
+    ExperimentProtocol,
+    ProtocolAssignments,
+    expand_protocol_personas,
+)
 from llm_behavior_lab.storage import (
+    load_json_document,
+    resolve_compatible_snapshot_path,
     validate_experiment_id,
-    write_jsonl_records,
-    write_persona_batch_jsonl,
-    write_persona_batch_jsonl_at_path,
+    write_json_document,
+    write_persona_batch,
+    write_persona_batch_at_path,
 )
 
 
@@ -112,9 +118,7 @@ def create_experiment_design(project_root: Path, design: ExperimentDesign) -> Pa
     path = project_root / "experiments" / design.experiment_id / "design.json"
     if path.exists():
         raise FileExistsError(f"experiment design already exists: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(design.model_dump_json(indent=2), encoding="utf-8")
-    return path
+    return write_json_document(path, design)
 
 
 def load_experiment_design(project_root: Path, experiment_id: str) -> ExperimentDesign:
@@ -171,13 +175,12 @@ def create_personas(
 ) -> PersonaBatch:
     """Create and persist one validated persona batch."""
     personas_path = (
-        project_root / "experiments" / validate_experiment_id(experiment_id) / "personas.jsonl"
+        project_root / "experiments" / validate_experiment_id(experiment_id) / "personas.json"
     )
-    if personas_path.exists() and not replace:
-        raise FileExistsError(f"personas already exist: {personas_path}")
+    _prepare_persona_snapshot_write(personas_path, replace)
     request = preview_persona_creation(experiment_id, design)
     batch = PersonaFactory().create_demographics_batch(request)
-    write_persona_batch_jsonl(project_root, batch)
+    write_persona_batch(project_root, batch)
     return batch
 
 
@@ -189,19 +192,22 @@ def materialize_personas(
 ) -> PersonaBatch:
     """Create the exact persona batch consumed by the later run stage."""
     experiment_root = project_root / "experiments" / design.experiment_id
-    personas_path = experiment_root / "personas.jsonl"
-    if personas_path.exists() and not replace:
-        raise FileExistsError(f"personas already exist: {personas_path}")
+    personas_path = experiment_root / "personas.json"
+    _prepare_persona_snapshot_write(personas_path, replace)
     if design.protocol is not None:
         expansion = expand_protocol_personas(design.protocol, design.experiment_id)
-        write_persona_batch_jsonl_at_path(
-            experiment_root / "base_personas.jsonl", expansion.base_personas
+        write_persona_batch_at_path(
+            experiment_root / "base_personas.json", expansion.base_personas
         )
-        write_persona_batch_jsonl_at_path(personas_path, expansion.personas)
-        (experiment_root / "protocol.json").write_text(
-            design.protocol.model_dump_json(indent=2), encoding="utf-8"
+        write_persona_batch_at_path(personas_path, expansion.personas)
+        write_json_document(
+            experiment_root / "protocol.json",
+            design.protocol,
         )
-        write_jsonl_records(experiment_root / "protocol_assignments.jsonl", expansion.assignments)
+        write_json_document(
+            experiment_root / "protocol_assignments.json",
+            ProtocolAssignments(assignments=expansion.assignments),
+        )
         return expansion.personas
 
     if design.personas is None:
@@ -216,5 +222,20 @@ def materialize_personas(
 
 def load_personas(project_root: Path, experiment_id: str) -> PersonaBatch:
     """Load the persisted persona batch required by the run stage."""
-    path = project_root / "experiments" / validate_experiment_id(experiment_id) / "personas.jsonl"
-    return PersonaBatch.model_validate_json(path.read_text(encoding="utf-8"))
+    experiment_root = (
+        project_root / "experiments" / validate_experiment_id(experiment_id)
+    )
+    path = resolve_compatible_snapshot_path(
+        experiment_root / "personas.json",
+        experiment_root / "personas.jsonl",
+    )
+    return load_json_document(path, PersonaBatch)
+
+
+def _prepare_persona_snapshot_write(path: Path, replace: bool) -> None:
+    legacy_path = path.with_suffix(".jsonl")
+    existing = resolve_compatible_snapshot_path(path, legacy_path)
+    if existing.exists() and not replace:
+        raise FileExistsError(f"personas already exist: {existing}")
+    if replace:
+        legacy_path.unlink(missing_ok=True)

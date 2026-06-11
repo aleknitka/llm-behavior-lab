@@ -90,7 +90,7 @@ def test_run_record_captures_persona_questionnaire_provider_metadata() -> None:
         error_count=0,
         item_count=10,
         output_paths={
-            "run": "experiments/pilot-study-one/run-bfi10-llama3-1-20260603120000/run.jsonl",
+            "run": "experiments/pilot-study-one/run-bfi10-llama3-1-20260603120000/run.json",
             "responses": "experiments/pilot-study-one/run-bfi10-llama3-1-20260603120000/responses",
             "scale": "experiments/pilot-study-one/run-bfi10-llama3-1-20260603120000/scale.json",
         },

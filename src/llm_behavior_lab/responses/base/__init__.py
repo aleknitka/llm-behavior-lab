@@ -1,5 +1,6 @@
 from llm_behavior_lab.responses.base.item_response import ChatMessage, ItemResponseRecord
 from llm_behavior_lab.responses.base.session import (
+    ExperimentMetadata,
     ProviderSnapshot,
     ResponseStatus,
     RunRecord,
@@ -19,6 +20,7 @@ __all__ = [
     "AnswerValue",
     "AnswerValueType",
     "ChatMessage",
+    "ExperimentMetadata",
     "ItemResponseRecord",
     "LikertAnswerValue",
     "MultipleChoiceAnswerValue",

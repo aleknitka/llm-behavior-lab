@@ -36,11 +36,11 @@ ID.
 experiments/{experiment_id}/
   protocol.json
   cohorts/cohort-{uuid}/
-    personas.jsonl
+    personas.json
     metadata.json
-    protocol-assignments.jsonl
+    protocol-assignments.json
   run-protocol-{model}-{timestamp}/
-    run.jsonl
+    run.json
     steps/{step_id}/
     conversations/
 ```
@@ -135,12 +135,12 @@ design. The protocol remains validated by `ExperimentProtocol`.
 uv run llm-behavior-lab personas --experiment-id pilot-study-one
 ```
 
-For a simple design, this writes one deterministic `personas.jsonl` batch. For a
+For a simple design, this writes one deterministic `personas.json` batch. For a
 protocol design, it also writes:
 
-- `base_personas.jsonl`
+- `base_personas.json`
 - `protocol.json`
-- `protocol_assignments.jsonl`
+- `protocol_assignments.json`
 
 The command refuses to overwrite an existing persona batch. Use `--replace` only
 when intentionally rematerializing the persisted design; it never changes
@@ -173,11 +173,16 @@ OPENAI_API_KEY=lm-studio \
 uv run llm-behavior-lab scale-run --experiment-id pilot-study-one
 ```
 
-`scale-run` loads `design.json` and `personas.jsonl`; it never samples personas. Each run
+`scale-run` loads `design.json` and `personas.json`; it never samples personas. Each run
 gets a new timestamped directory and snapshots the questionnaire as `scale.json`.
 Every item response stores the prompt, typed answer, raw response, seed, status, and
 protocol assignment metadata when applicable. Provider and model settings are
-snapshotted once in `run.jsonl`.
+snapshotted once in `run.json`.
+
+Complete snapshots use JSON and are written atomically. Append-only response,
+conversation, scoring, and analysis ledgers use JSONL. Result exports resolve
+persona features from the experiment or cohort snapshot by `subject_id`; response
+records do not duplicate the persona document.
 
 If execution fails before a complete run is written, retain the partial files for
 diagnosis. Current staged execution does not resume partial runs; run the command

@@ -42,7 +42,7 @@ def test_design_round_trip_and_persona_materialization(tmp_path: Path) -> None:
     assert path == tmp_path / "experiments" / "pilot-study-one" / "design.json"
     assert loaded == design
     assert len(batch.personas) == 2
-    assert (path.parent / "personas.jsonl").exists()
+    assert (path.parent / "personas.json").exists()
     assert load_personas(tmp_path, "pilot-study-one") == batch
 
 
@@ -79,7 +79,7 @@ def test_create_personas_persists_and_returns_deterministic_batch(tmp_path: Path
 
     assert first == persisted
     assert first.metadata.requested_fields == ["age", "country"]
-    assert (tmp_path / "experiments" / "persona-study-one" / "personas.jsonl").exists()
+    assert (tmp_path / "experiments" / "persona-study-one" / "personas.json").exists()
 
 
 def test_preview_persona_creation_resolves_defaults_without_writing(tmp_path: Path) -> None:
@@ -198,7 +198,7 @@ def test_persona_range_declaration_stays_in_design_and_materializes_to_integer(
     batch = materialize_personas(tmp_path, design)
     persisted_design = json.loads(design_path.read_text(encoding="utf-8"))
     persisted_personas = json.loads(
-        (design_path.parent / "personas.jsonl").read_text(encoding="utf-8")
+        (design_path.parent / "personas.json").read_text(encoding="utf-8")
     )
 
     assert persisted_design["personas"]["generation_config"]["field_values"]["age"] == {
@@ -251,12 +251,9 @@ def test_protocol_range_declaration_and_realized_assignments_are_persisted(
     batch = materialize_personas(tmp_path, design)
     experiment_root = tmp_path / "experiments" / "protocol-range-one"
     persisted_protocol = json.loads((experiment_root / "protocol.json").read_text(encoding="utf-8"))
-    assignment_rows = [
-        json.loads(line)
-        for line in (experiment_root / "protocol_assignments.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
+    assignment_rows = json.loads(
+        (experiment_root / "protocol_assignments.json").read_text(encoding="utf-8")
+    )["assignments"]
 
     assert persisted_protocol["factors"][0]["levels"][0]["value"] == {
         "type": "rand_uniform_range",
@@ -266,3 +263,23 @@ def test_protocol_range_declaration_and_realized_assignments_are_persisted(
     assert all(isinstance(persona.features.age, int) for persona in batch.personas)
     assert all(isinstance(row["factor_values"]["age"], int) for row in assignment_rows)
     assert all(row["factor_level_ids"]["age"] == "adult" for row in assignment_rows)
+
+
+def test_load_personas_supports_legacy_snapshot_and_rejects_conflict(
+    tmp_path: Path,
+) -> None:
+    design = PersonaDesign(count=1, seed=7)
+    batch = create_personas(tmp_path, "legacy-persona-one", design)
+    experiment_root = tmp_path / "experiments" / "legacy-persona-one"
+    normalized = experiment_root / "personas.json"
+    legacy = experiment_root / "personas.jsonl"
+    normalized.replace(legacy)
+
+    assert load_personas(tmp_path, "legacy-persona-one") == batch
+
+    normalized.write_text(
+        batch.model_copy(update={"experiment_id": "conflict-study-one"}).model_dump_json(),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="conflicting canonical snapshot files"):
+        load_personas(tmp_path, "legacy-persona-one")

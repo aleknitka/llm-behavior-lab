@@ -58,23 +58,24 @@ def test_batch_generates_personas_and_runs_each_one_under_experiment(tmp_path) -
     )
     assert len(result.runs) == 1
     assert len(run_roots) == 1
-    assert (experiment_root / "personas.jsonl").exists()
-    assert (experiment_root / "metadata.jsonl").exists()
+    assert (experiment_root / "personas.json").exists()
+    assert (experiment_root / "metadata.json").exists()
     assert not (experiment_root / "sessions").exists()
 
-    metadata_rows = [
-        json.loads(line)
-        for line in (experiment_root / "metadata.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    metadata_rows = json.loads(
+        (experiment_root / "metadata.json").read_text(encoding="utf-8")
+    )["runs"]
     assert len(metadata_rows) == 1
 
     assert run_root.name.startswith("run-bfi10-openai-gpt-oss-20b-")
     assert {path.name for path in run_root.iterdir()} == {
-        "run.jsonl",
+        "run.json",
         "responses",
         "scale.json",
     }
-    assert (run_root / "run.jsonl").read_text(encoding="utf-8").count("\n") == 1
+    assert json.loads((run_root / "run.json").read_text(encoding="utf-8"))[
+        "run_id"
+    ] == result.runs[0].run_id
     assert len(list(responses_root.glob("*.jsonl"))) == 100
     for response_path in responses_root.glob("*.jsonl"):
         assert response_path.read_text(encoding="utf-8").count("\n") == 10
@@ -159,7 +160,7 @@ def test_batch_run_record_does_not_duplicate_persona_snapshot(tmp_path) -> None:
         seed=14,
     )
 
-    run_path = tmp_path / "experiments" / result.experiment_id / result.runs[0].run_id / "run.jsonl"
+    run_path = tmp_path / "experiments" / result.experiment_id / result.runs[0].run_id / "run.json"
     run_row = json.loads(run_path.read_text(encoding="utf-8"))
 
     assert "persona_snapshot" not in run_row
@@ -279,17 +280,14 @@ def test_protocol_runner_writes_protocol_artifacts_and_metadata(tmp_path) -> Non
     experiment_root = tmp_path / "experiments" / "proto-study-one"
     run_root = experiment_root / result.runs[0].run_id
     assert (experiment_root / "protocol.json").exists()
-    assert (experiment_root / "base_personas.jsonl").exists()
-    assert (experiment_root / "personas.jsonl").exists()
-    assert (experiment_root / "protocol_assignments.jsonl").exists()
+    assert (experiment_root / "base_personas.json").exists()
+    assert (experiment_root / "personas.json").exists()
+    assert (experiment_root / "protocol_assignments.json").exists()
     assert len(list((run_root / "responses").glob("*.jsonl"))) == 1 * 2 * 2 * 2
 
-    assignment_rows = [
-        json.loads(line)
-        for line in (experiment_root / "protocol_assignments.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
+    assignment_rows = json.loads(
+        (experiment_root / "protocol_assignments.json").read_text(encoding="utf-8")
+    )["assignments"]
     assert len(assignment_rows) == 8
     response_path = sorted((run_root / "responses").glob("*.jsonl"))[0]
     response_rows = [json.loads(line) for line in response_path.read_text().splitlines()]
