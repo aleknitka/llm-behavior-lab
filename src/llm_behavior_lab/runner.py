@@ -1,5 +1,6 @@
+import asyncio
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -759,6 +760,112 @@ def run_persisted_persona_batch(
             "responses": str(paths.responses_root),
             "scale": str(paths.scale_path),
         },
+    )
+    write_json_document(paths.run_path, run_record)
+    update_experiment_metadata(paths.metadata_path, run_record)
+    _write_scale_copy(paths.scale_path, questionnaire)
+    return BatchRunResult(
+        experiment_id=experiment_id,
+        session_id=session_id,
+        personas=personas,
+        runs=[run_record],
+        histories=histories,
+    )
+
+
+async def run_persisted_persona_batch_async(
+    *,
+    personas: PersonaBatch,
+    questionnaire: Questionnaire,
+    settings: ModelSettings,
+    client_factory: Callable[[], AsyncLlmClient],
+    project_root: Path,
+    context: str | None = None,
+    response_metadata_by_subject: dict[str, dict[str, object]] | None = None,
+    initial_histories: dict[str, list[Message]] | None = None,
+    run_id: str | None = None,
+    run_root_override: Path | None = None,
+    retry_failed: bool = False,
+    cancel_event: asyncio.Event | None = None,
+) -> BatchRunResult:
+    """Run persisted questionnaire subjects concurrently within a fixed bound."""
+    experiment_id = validate_experiment_id(personas.experiment_id)
+    session_id = normalize_prefixed_uuid("session-")
+    started_at = datetime.now(UTC)
+    resolved_run_id = run_id or _next_run_id(
+        project_root=project_root,
+        experiment_id=experiment_id,
+        questionnaire=questionnaire,
+        settings=settings,
+        started_at=started_at,
+    )
+    paths = resolve_experiment_paths(
+        project_root,
+        experiment_id,
+        resolved_run_id,
+        run_root_override=run_root_override,
+    )
+    cancellation = cancel_event or asyncio.Event()
+    semaphore = asyncio.Semaphore(settings.max_concurrency)
+    records_by_subject: dict[str, list[ItemResponseRecord]] = {}
+    histories: dict[str, list[Message]] = {}
+
+    async def run_subject(generated_persona: GeneratedPersona) -> None:
+        async with semaphore:
+            if cancellation.is_set():
+                return
+            subject_id = str(generated_persona.subject_id)
+            persona = _runtime_persona_from_generated(generated_persona)
+            records = await run_questionnaire_async(
+                persona=persona,
+                questionnaire=questionnaire,
+                settings=settings,
+                client=client_factory(),
+                project_root=project_root,
+                experiment_id=experiment_id,
+                session_id=session_id,
+                run_id=resolved_run_id,
+                write_session_record=False,
+                response_metadata=(response_metadata_by_subject or {}).get(subject_id),
+                context=context,
+                initial_history=(initial_histories or {}).get(subject_id),
+                run_root_override=run_root_override,
+                retry_failed=retry_failed,
+            )
+            records_by_subject[subject_id] = records
+            histories[subject_id] = _history_after_questionnaire(
+                persona,
+                context,
+                (initial_histories or {}).get(subject_id),
+                records,
+            )
+
+    await asyncio.gather(
+        *(run_subject(persona) for persona in personas.personas)
+    )
+    all_records = [
+        record
+        for persona in personas.personas
+        for record in records_by_subject.get(str(persona.subject_id), [])
+    ]
+    completed_at = datetime.now(UTC)
+    run_record = _run_record(
+        experiment_id,
+        session_id,
+        resolved_run_id,
+        [str(persona.subject_id) for persona in personas.personas],
+        len(personas.personas),
+        questionnaire,
+        settings,
+        started_at,
+        completed_at,
+        all_records,
+        output_paths={
+            "run": str(paths.run_path),
+            "responses": str(paths.responses_root),
+            "scale": str(paths.scale_path),
+        },
+        cancelled=cancellation.is_set(),
     )
     write_json_document(paths.run_path, run_record)
     update_experiment_metadata(paths.metadata_path, run_record)

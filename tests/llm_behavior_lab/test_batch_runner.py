@@ -1,14 +1,28 @@
+import asyncio
 import json
+from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 
+import pytest
 from loguru import logger
 
 from llm_behavior_lab.models import LlmQuestionResult, ModelSettings
-from llm_behavior_lab.personas.factory import PersonaGenerationConfig, RequestedDemographicField
+from llm_behavior_lab.personas.factory import (
+    PersonaFactory,
+    PersonaFactoryRequest,
+    PersonaGenerationConfig,
+    RequestedDemographicField,
+)
 from llm_behavior_lab.protocols import ExperimentProtocol
 from llm_behavior_lab.questionnaires.base.scale import Questionnaire
 from llm_behavior_lab.questionnaires.bfi10 import BFI_10
-from llm_behavior_lab.runner import run_persona_questionnaire_batch, run_protocol_experiment
+from llm_behavior_lab.responses.base import ResponseStatus
+from llm_behavior_lab.runner import (
+    run_persisted_persona_batch_async,
+    run_persona_questionnaire_batch,
+    run_protocol_experiment,
+)
 
 
 class FakeBatchClient:
@@ -302,3 +316,125 @@ def test_protocol_runner_writes_protocol_artifacts_and_metadata(tmp_path) -> Non
     assert "persona_snapshot" not in response_rows[0]
     assert "Additional context:" in client.calls[0][0]["content"]
     assert "Read this protocol vignette before answering." in client.calls[0][0]["content"]
+
+
+@dataclass
+class AsyncCallState:
+    active: int = 0
+    max_active: int = 0
+    per_subject_items: dict[str, list[str]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+    two_active: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+class TrackingAsyncClient:
+    def __init__(self, state: AsyncCallState) -> None:
+        self.state = state
+
+    async def complete(
+        self,
+        messages: Sequence[dict[str, str]],
+        settings: ModelSettings,
+        allowed_answer_ids: Sequence[str],
+    ) -> LlmQuestionResult:
+        system = messages[0]["content"]
+        subject_id = system.split("Persona ID: ", 1)[1].splitlines()[0]
+        prompt = messages[-1]["content"]
+        item_id = next(item.id for item in BFI_10.items if prompt.startswith(item.text))
+        self.state.active += 1
+        self.state.max_active = max(self.state.max_active, self.state.active)
+        if self.state.active == 2:
+            self.state.two_active.set()
+        try:
+            await asyncio.sleep(0.005)
+            self.state.per_subject_items[subject_id].append(item_id)
+            return LlmQuestionResult(
+                selected_answer_id=allowed_answer_ids[0],
+                raw_response=allowed_answer_ids[0],
+            )
+        finally:
+            self.state.active -= 1
+
+
+def _persona_batch(count: int):
+    return PersonaFactory().create_demographics_batch(
+        PersonaFactoryRequest(
+            count=count,
+            requested_fields={RequestedDemographicField.AGE},
+            seed=11,
+            experiment_id="async-study-one",
+        )
+    )
+
+
+@pytest.mark.anyio
+async def test_async_batch_bounds_concurrency_and_keeps_subject_items_sequential(
+    tmp_path,
+) -> None:
+    personas = _persona_batch(3)
+    state = AsyncCallState()
+
+    result = await run_persisted_persona_batch_async(
+        personas=personas,
+        questionnaire=BFI_10,
+        settings=ModelSettings(
+            model="test",
+            provider_base_url="http://localhost",
+            temperature=0,
+            timeout_seconds=10,
+            max_concurrency=2,
+        ),
+        client_factory=lambda: TrackingAsyncClient(state),
+        project_root=tmp_path,
+    )
+
+    assert state.max_active == 2
+    assert state.per_subject_items == {
+        str(persona.subject_id): [item.id for item in BFI_10.items]
+        for persona in personas.personas
+    }
+    assert result.runs[0].status is ResponseStatus.COMPLETED
+
+
+@pytest.mark.anyio
+async def test_async_batch_cancellation_stops_waiting_subjects(tmp_path) -> None:
+    personas = _persona_batch(3)
+    state = AsyncCallState()
+    cancel_event = asyncio.Event()
+
+    async def request_cancellation() -> None:
+        await state.two_active.wait()
+        cancel_event.set()
+
+    cancellation = asyncio.create_task(request_cancellation())
+    result = await run_persisted_persona_batch_async(
+        personas=personas,
+        questionnaire=BFI_10,
+        settings=ModelSettings(
+            model="test",
+            provider_base_url="http://localhost",
+            temperature=0,
+            timeout_seconds=10,
+            max_concurrency=2,
+        ),
+        client_factory=lambda: TrackingAsyncClient(state),
+        project_root=tmp_path,
+        cancel_event=cancel_event,
+    )
+    await cancellation
+
+    assert len(state.per_subject_items) == 2
+    assert all(
+        item_ids == [item.id for item in BFI_10.items]
+        for item_ids in state.per_subject_items.values()
+    )
+    assert result.runs[0].status is ResponseStatus.CANCELLED
+    responses_root = (
+        tmp_path
+        / "experiments"
+        / personas.experiment_id
+        / result.runs[0].run_id
+        / "responses"
+    )
+    assert len(list(responses_root.glob("*.jsonl"))) == 2
