@@ -49,6 +49,12 @@ from llm_behavior_lab.responses.base import (
     SingleChoiceAnswerValue,
     TextAnswerValue,
 )
+from llm_behavior_lab.responses.item_ledgers import (
+    latest_item_attempts,
+    load_item_ledger,
+    pending_item_ids,
+    validate_item_ledger,
+)
 from llm_behavior_lab.storage import (
     append_jsonl_record,
     build_run_directory_name,
@@ -322,6 +328,7 @@ def run_questionnaire(
     context: str | None = None,
     initial_history: Sequence[Message] | None = None,
     run_root_override: Path | None = None,
+    retry_failed: bool = False,
 ) -> list[ItemResponseRecord]:
     """Run one questionnaire synchronously for a single persona.
 
@@ -375,14 +382,38 @@ def run_questionnaire(
         questionnaire_id=questionnaire.id,
         model=settings.model,
     )
-    history: list[Message] = (
-        list(initial_history)
-        if initial_history is not None
-        else [{"role": "system", "content": render_persona_intro(persona, context=context)}]
+    response_path = paths.response_path_for_subject(persona.persona_id)
+    persisted = load_item_ledger(response_path)
+    if persisted:
+        validate_item_ledger(
+            questionnaire,
+            persona.persona_id,
+            resolved_run_id,
+            persisted,
+        )
+    pending = set(
+        pending_item_ids(
+            questionnaire,
+            persisted,
+            retry_failed=retry_failed,
+        )
     )
-    records: list[ItemResponseRecord] = []
+    effective = latest_item_attempts(persisted)
 
     for item in questionnaire.items:
+        if item.id not in pending:
+            continue
+        preceding = (
+            [record for record in effective if record.item_order < item.order]
+            if bool(questionnaire.metadata.get("retain_history", True))
+            else []
+        )
+        history = _history_after_questionnaire(
+            persona,
+            context,
+            initial_history,
+            preceding,
+        )
         logger.debug(
             "Asking item {item_order}/{item_count} item_id={item_id} run_id={run_id}",
             item_order=item.order,
@@ -420,8 +451,8 @@ def run_questionnaire(
             call_seed,
             response_metadata,
         )
-        append_jsonl_record(paths.response_path_for_subject(persona.persona_id), record)
-        records.append(record)
+        append_jsonl_record(response_path, record)
+        effective = latest_item_attempts([*effective, record])
         logger.debug(
             "Recorded item response item_id={item_id} run_id={run_id} status={status}",
             item_id=item.id,
@@ -429,11 +460,7 @@ def run_questionnaire(
             status=record.status,
         )
 
-        if result.error is None and bool(questionnaire.metadata.get("retain_history", True)):
-            history = [
-                *messages,
-                {"role": "assistant", "content": result.raw_response or ""},
-            ]
+    records = latest_item_attempts(load_item_ledger(response_path))
 
     completed_at = datetime.now(UTC)
     run_record = _run_record(
@@ -923,6 +950,9 @@ async def run_questionnaire_async(
     write_session_record: bool = True,
     response_metadata: dict[str, object] | None = None,
     context: str | None = None,
+    initial_history: Sequence[Message] | None = None,
+    run_root_override: Path | None = None,
+    retry_failed: bool = False,
 ) -> list[ItemResponseRecord]:
     """Run one questionnaire asynchronously for a single persona.
 
@@ -966,6 +996,7 @@ async def run_questionnaire_async(
         project_root=project_root,
         experiment_id=resolved_experiment_id,
         run_id=resolved_run_id,
+        run_root_override=run_root_override,
     )
     logger.info(
         "Starting async questionnaire run {run_id} for persona {persona_id} "
@@ -975,12 +1006,38 @@ async def run_questionnaire_async(
         questionnaire_id=questionnaire.id,
         model=settings.model,
     )
-    history: list[Message] = [
-        {"role": "system", "content": render_persona_intro(persona, context=context)}
-    ]
-    records: list[ItemResponseRecord] = []
+    response_path = paths.response_path_for_subject(persona.persona_id)
+    persisted = load_item_ledger(response_path)
+    if persisted:
+        validate_item_ledger(
+            questionnaire,
+            persona.persona_id,
+            resolved_run_id,
+            persisted,
+        )
+    pending = set(
+        pending_item_ids(
+            questionnaire,
+            persisted,
+            retry_failed=retry_failed,
+        )
+    )
+    effective = latest_item_attempts(persisted)
 
     for item in questionnaire.items:
+        if item.id not in pending:
+            continue
+        preceding = (
+            [record for record in effective if record.item_order < item.order]
+            if bool(questionnaire.metadata.get("retain_history", True))
+            else []
+        )
+        history = _history_after_questionnaire(
+            persona,
+            context,
+            initial_history,
+            preceding,
+        )
         logger.debug(
             "Asking async item {item_order}/{item_count} item_id={item_id} run_id={run_id}",
             item_order=item.order,
@@ -1018,8 +1075,8 @@ async def run_questionnaire_async(
             call_seed,
             response_metadata,
         )
-        append_jsonl_record(paths.response_path_for_subject(persona.persona_id), record)
-        records.append(record)
+        append_jsonl_record(response_path, record)
+        effective = latest_item_attempts([*effective, record])
         logger.debug(
             "Recorded async item response item_id={item_id} run_id={run_id} status={status}",
             item_id=item.id,
@@ -1027,11 +1084,7 @@ async def run_questionnaire_async(
             status=record.status,
         )
 
-        if result.error is None and bool(questionnaire.metadata.get("retain_history", True)):
-            history = [
-                *messages,
-                {"role": "assistant", "content": result.raw_response or ""},
-            ]
+    records = latest_item_attempts(load_item_ledger(response_path))
 
     completed_at = datetime.now(UTC)
     run_record = _run_record(
