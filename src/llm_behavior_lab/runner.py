@@ -57,9 +57,11 @@ from llm_behavior_lab.responses.item_ledgers import (
     validate_item_ledger,
 )
 from llm_behavior_lab.storage import (
+    ExperimentPaths,
     append_jsonl_record,
     build_run_directory_name,
     generate_experiment_id,
+    load_json_document,
     normalize_prefixed_uuid,
     resolve_experiment_paths,
     slugify_model_name,
@@ -314,6 +316,51 @@ def _run_record(
 
 def _write_scale_copy(path: Path, questionnaire: Questionnaire) -> None:
     write_json_document(path, questionnaire)
+
+
+def validate_questionnaire_resume(
+    paths: ExperimentPaths,
+    questionnaire: Questionnaire,
+    settings: ModelSettings,
+    subject_ids: Sequence[str],
+    run_id: str,
+) -> RunRecord | None:
+    if not paths.run_root.exists():
+        return None
+    if not paths.scale_path.exists():
+        raise ValueError("existing run is missing its questionnaire snapshot")
+    persisted_questionnaire = load_json_document(paths.scale_path, Questionnaire)
+    if persisted_questionnaire != questionnaire:
+        raise ValueError("run questionnaire configuration does not match resume request")
+
+    existing = (
+        load_json_document(paths.run_path, RunRecord)
+        if paths.run_path.exists()
+        else None
+    )
+    if existing is not None:
+        if existing.run_id != run_id:
+            raise ValueError("run manifest ID does not match resume request")
+        if existing.provider != _provider_snapshot(settings):
+            raise ValueError("run provider configuration does not match resume request")
+        if existing.subject_ids != list(subject_ids):
+            raise ValueError("run persona cohort does not match resume request")
+
+    expected_subjects = set(subject_ids)
+    existing_subjects = {
+        response_path.stem
+        for response_path in paths.responses_root.glob("*.jsonl")
+    }
+    unexpected = existing_subjects - expected_subjects
+    if unexpected:
+        raise ValueError(
+            "run persona cohort contains unexpected response ledgers: "
+            + ", ".join(sorted(unexpected))
+        )
+    for subject_id in existing_subjects:
+        records = load_item_ledger(paths.response_path_for_subject(subject_id))
+        validate_item_ledger(questionnaire, subject_id, run_id, records)
+    return existing
 
 
 def _next_run_id(
@@ -697,6 +744,7 @@ def run_persisted_persona_batch(
     initial_histories: dict[str, list[Message]] | None = None,
     run_id: str | None = None,
     run_root_override: Path | None = None,
+    retry_failed: bool = False,
 ) -> BatchRunResult:
     """Run a previously materialized persona batch without regenerating subjects."""
     experiment_id = validate_experiment_id(personas.experiment_id)
@@ -715,6 +763,17 @@ def run_persisted_persona_batch(
         resolved_run_id,
         run_root_override=run_root_override,
     )
+    subject_ids = [str(persona.subject_id) for persona in personas.personas]
+    existing_run = validate_questionnaire_resume(
+        paths,
+        questionnaire,
+        settings,
+        subject_ids,
+        resolved_run_id,
+    )
+    if existing_run is not None:
+        session_id = existing_run.session_id
+        started_at = existing_run.started_at
     all_records: list[ItemResponseRecord] = []
     histories: dict[str, list[Message]] = {}
     for generated_persona in personas.personas:
@@ -734,6 +793,7 @@ def run_persisted_persona_batch(
             context=context,
             initial_history=(initial_histories or {}).get(subject_id),
             run_root_override=run_root_override,
+            retry_failed=retry_failed,
         )
         all_records.extend(records)
         histories[subject_id] = _history_after_questionnaire(
@@ -748,7 +808,7 @@ def run_persisted_persona_batch(
         experiment_id,
         session_id,
         resolved_run_id,
-        [str(persona.subject_id) for persona in personas.personas],
+        subject_ids,
         len(personas.personas),
         questionnaire,
         settings,
@@ -805,6 +865,17 @@ async def run_persisted_persona_batch_async(
         resolved_run_id,
         run_root_override=run_root_override,
     )
+    subject_ids = [str(persona.subject_id) for persona in personas.personas]
+    existing_run = validate_questionnaire_resume(
+        paths,
+        questionnaire,
+        settings,
+        subject_ids,
+        resolved_run_id,
+    )
+    if existing_run is not None:
+        session_id = existing_run.session_id
+        started_at = existing_run.started_at
     cancellation = cancel_event or asyncio.Event()
     semaphore = asyncio.Semaphore(settings.max_concurrency)
     records_by_subject: dict[str, list[ItemResponseRecord]] = {}
@@ -853,7 +924,7 @@ async def run_persisted_persona_batch_async(
         experiment_id,
         session_id,
         resolved_run_id,
-        [str(persona.subject_id) for persona in personas.personas],
+        subject_ids,
         len(personas.personas),
         questionnaire,
         settings,

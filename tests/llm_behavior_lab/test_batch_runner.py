@@ -438,3 +438,139 @@ async def test_async_batch_cancellation_stops_waiting_subjects(tmp_path) -> None
         / "responses"
     )
     assert len(list(responses_root.glob("*.jsonl"))) == 2
+
+
+@pytest.mark.anyio
+async def test_async_batch_resume_is_idempotent_and_replaces_run_index_entry(
+    tmp_path,
+) -> None:
+    personas = _persona_batch(1)
+    state = AsyncCallState()
+    settings = ModelSettings(
+        model="test",
+        provider_base_url="http://localhost",
+        temperature=0,
+        timeout_seconds=10,
+    )
+    first = await run_persisted_persona_batch_async(
+        personas=personas,
+        questionnaire=BFI_10,
+        settings=settings,
+        client_factory=lambda: TrackingAsyncClient(state),
+        project_root=tmp_path,
+    )
+    first_started_at = first.runs[0].started_at
+    resumed_state = AsyncCallState()
+
+    resumed = await run_persisted_persona_batch_async(
+        personas=personas,
+        questionnaire=BFI_10,
+        settings=settings,
+        client_factory=lambda: TrackingAsyncClient(resumed_state),
+        project_root=tmp_path,
+        run_id=first.runs[0].run_id,
+    )
+
+    metadata = json.loads(
+        (
+            tmp_path
+            / "experiments"
+            / personas.experiment_id
+            / "metadata.json"
+        ).read_text()
+    )
+    assert resumed_state.per_subject_items == {}
+    assert resumed.runs[0].started_at == first_started_at
+    assert [run["run_id"] for run in metadata["runs"]] == [first.runs[0].run_id]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("mismatch", ["provider", "questionnaire", "personas"])
+async def test_async_batch_rejects_incompatible_resume_before_provider_calls(
+    tmp_path,
+    mismatch: str,
+) -> None:
+    personas = _persona_batch(1)
+    settings = ModelSettings(
+        model="test",
+        provider_base_url="http://localhost",
+        temperature=0,
+        timeout_seconds=10,
+    )
+    first = await run_persisted_persona_batch_async(
+        personas=personas,
+        questionnaire=BFI_10,
+        settings=settings,
+        client_factory=lambda: TrackingAsyncClient(AsyncCallState()),
+        project_root=tmp_path,
+    )
+    resumed_personas = personas
+    resumed_questionnaire = BFI_10
+    resumed_settings = settings
+    if mismatch == "provider":
+        resumed_settings = settings.model_copy(update={"max_concurrency": 7})
+    elif mismatch == "questionnaire":
+        resumed_questionnaire = BFI_10.model_copy(update={"version": "2.0"})
+    else:
+        resumed_personas = _persona_batch(2)
+    factory_calls = 0
+
+    def client_factory() -> TrackingAsyncClient:
+        nonlocal factory_calls
+        factory_calls += 1
+        return TrackingAsyncClient(AsyncCallState())
+
+    with pytest.raises(ValueError, match=mismatch.removesuffix("s")):
+        await run_persisted_persona_batch_async(
+            personas=resumed_personas,
+            questionnaire=resumed_questionnaire,
+            settings=resumed_settings,
+            client_factory=client_factory,
+            project_root=tmp_path,
+            run_id=first.runs[0].run_id,
+        )
+
+    assert factory_calls == 0
+
+
+@pytest.mark.anyio
+async def test_async_batch_resumes_partial_ledgers_without_run_manifest(
+    tmp_path,
+) -> None:
+    personas = _persona_batch(1)
+    settings = ModelSettings(
+        model="test",
+        provider_base_url="http://localhost",
+        temperature=0,
+        timeout_seconds=10,
+    )
+    first = await run_persisted_persona_batch_async(
+        personas=personas,
+        questionnaire=BFI_10,
+        settings=settings,
+        client_factory=lambda: TrackingAsyncClient(AsyncCallState()),
+        project_root=tmp_path,
+    )
+    run_root = (
+        tmp_path
+        / "experiments"
+        / personas.experiment_id
+        / first.runs[0].run_id
+    )
+    response_path = next((run_root / "responses").glob("*.jsonl"))
+    first_line = response_path.read_text().splitlines()[0]
+    response_path.write_text(first_line + "\n", encoding="utf-8")
+    (run_root / "run.json").unlink()
+    state = AsyncCallState()
+
+    resumed = await run_persisted_persona_batch_async(
+        personas=personas,
+        questionnaire=BFI_10,
+        settings=settings,
+        client_factory=lambda: TrackingAsyncClient(state),
+        project_root=tmp_path,
+        run_id=first.runs[0].run_id,
+    )
+
+    assert sum(map(len, state.per_subject_items.values())) == len(BFI_10.items) - 1
+    assert resumed.runs[0].status is ResponseStatus.COMPLETED
