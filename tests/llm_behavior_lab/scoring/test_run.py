@@ -11,6 +11,7 @@ from llm_behavior_lab.responses.base import (
     ResponseStatus,
 )
 from llm_behavior_lab.scoring import score_run
+from llm_behavior_lab.scoring.run import _load_response_records
 
 
 def test_score_run_writes_scores_reliability_and_manifest(tmp_path: Path) -> None:
@@ -52,6 +53,41 @@ def test_score_run_writes_scores_reliability_and_manifest(tmp_path: Path) -> Non
     manifest = json.loads((result.output_root / "scoring.json").read_text())
     assert manifest["questionnaire_id"] == "bfi_10"
     assert manifest["scoring_model_id"] == "default"
+
+
+def test_score_run_loader_uses_latest_item_attempt(tmp_path: Path) -> None:
+    responses_root = tmp_path / "responses"
+    responses_root.mkdir()
+    item = BFI_10.items[0]
+    failed = ItemResponseRecord(
+        subject_id="subject-1",
+        session_id="session-1",
+        run_id="run-1",
+        questionnaire_id=BFI_10.id,
+        questionnaire_version=BFI_10.version,
+        item_id=item.id,
+        item_order=item.order,
+        item_text=item.text,
+        response_format_type="likert",
+        messages=[],
+        status=ResponseStatus.FAILED,
+        error="provider unavailable",
+    )
+    completed = failed.model_copy(
+        update={
+            "answer": LikertAnswerValue(value=3),
+            "raw_response": "3",
+            "status": ResponseStatus.COMPLETED,
+            "error": None,
+        }
+    )
+    (responses_root / "subject-1.jsonl").write_text(
+        failed.model_dump_json() + "\n" + completed.model_dump_json() + "\n"
+    )
+
+    records = _load_response_records(responses_root)
+
+    assert records == [completed]
 
 
 def test_score_run_writes_overall_and_condition_reliability(tmp_path: Path) -> None:

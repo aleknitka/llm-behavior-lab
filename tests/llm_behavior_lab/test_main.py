@@ -1,4 +1,6 @@
+import asyncio
 import json
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +16,7 @@ from llm_behavior_lab.experiments import (
     load_personas,
 )
 from llm_behavior_lab.main import (
+    _run_with_cancellation,
     build_parser,
     load_env_file,
     load_persona_config,
@@ -22,6 +25,7 @@ from llm_behavior_lab.main import (
     parse_features,
     resolve_provider_config,
 )
+from llm_behavior_lab.models import ModelSettings
 from llm_behavior_lab.personas.factory import RequestedDemographicField
 
 
@@ -60,6 +64,52 @@ def test_parser_accepts_staged_design_command() -> None:
     assert args.experiment_id == "pilot-study-one"
     assert args.persona_count == 10
     assert args.scoring_model_id is None
+
+
+@pytest.mark.parametrize("command", ["scale-design", "task-design"])
+def test_design_parser_accepts_provider_execution_policy(command: str) -> None:
+    procedure_args = (
+        ["--questionnaire", "bfi_10"]
+        if command == "scale-design"
+        else ["--task", "four-deck-card-task"]
+    )
+    args = build_parser().parse_args(
+        [
+            command,
+            "--experiment-id",
+            "pilot-study-one",
+            *procedure_args,
+            "--max-attempts",
+            "5",
+            "--initial-backoff",
+            "0.5",
+            "--max-backoff",
+            "8",
+            "--max-concurrency",
+            "6",
+        ]
+    )
+
+    assert args.max_attempts == 5
+    assert args.initial_backoff == 0.5
+    assert args.max_backoff == 8
+    assert args.max_concurrency == 6
+
+
+def test_scale_run_parser_accepts_explicit_resume_controls() -> None:
+    args = build_parser().parse_args(
+        [
+            "scale-run",
+            "--experiment-id",
+            "pilot-study-one",
+            "--run-id",
+            "run-bfi10-test-20260603142709",
+            "--retry-failed",
+        ]
+    )
+
+    assert args.run_id == "run-bfi10-test-20260603142709"
+    assert args.retry_failed is True
 
 
 def test_parser_accepts_questionnaire_discovery_commands() -> None:
@@ -406,17 +456,37 @@ def test_parser_accepts_task_workflow_commands() -> None:
             "task.json",
         ]
     )
-    run = build_parser().parse_args(
-        ["task-run", "--experiment-id", "card-task-one", "--concurrency", "4"]
-    )
+    run = build_parser().parse_args(["task-run", "--experiment-id", "card-task-one"])
     analyze = build_parser().parse_args(
         ["task-analyze", "--experiment-id", "card-task-one"]
     )
 
     assert design.task == "four-deck-card-task"
     assert design.task_config == Path("task.json")
-    assert run.concurrency == 4
+    assert not hasattr(run, "concurrency")
     assert analyze.command == "task-analyze"
+
+
+@pytest.mark.anyio
+async def test_run_with_cancellation_sets_event_from_sigint_callback(monkeypatch) -> None:
+    callbacks: dict[int, Callable[[], None]] = {}
+
+    class FakeLoop:
+        def add_signal_handler(self, signal_number, callback) -> None:
+            callbacks[signal_number] = callback
+
+        def remove_signal_handler(self, signal_number) -> bool:
+            callbacks.pop(signal_number)
+            return True
+
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: FakeLoop())
+
+    async def operation(cancel_event: asyncio.Event) -> bool:
+        next(iter(callbacks.values()))()
+        return cancel_event.is_set()
+
+    assert await _run_with_cancellation(operation) is True
+    assert callbacks == {}
 
 
 def test_load_protocol_reads_valid_protocol_json(tmp_path) -> None:
@@ -526,6 +596,70 @@ def test_scale_score_uses_scoring_model_from_design_by_default(
         "scoring_model_id": "construct_high",
     }
     assert "construct_high-1.0" in capsys.readouterr().out
+
+
+def test_scale_run_dispatches_async_with_persisted_execution_policy(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    persona_design = PersonaDesign(count=1, seed=7)
+    design = ExperimentDesign(
+        experiment_id="pilot-study-one",
+        procedure=ScaleProcedureDesign(questionnaire_id="bfi_10"),
+        personas=persona_design,
+        provider=ProviderDesign(
+            model="test",
+            base_url="http://localhost",
+            max_attempts=5,
+            initial_backoff_seconds=0.5,
+            max_backoff_seconds=8,
+            max_concurrency=6,
+        ),
+    )
+    create_experiment_design(tmp_path, design)
+    create_personas(tmp_path, design.experiment_id, persona_design)
+    captured: dict[str, object] = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            runs=[SimpleNamespace(run_id="run-bfi10-test-20260603142709")]
+        )
+
+    monkeypatch.setattr(
+        "llm_behavior_lab.main.run_persisted_persona_batch_async",
+        fake_run,
+    )
+    monkeypatch.setattr(
+        "llm_behavior_lab.main.AsyncOpenAiChatClient",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    result = main(
+        [
+            "scale-run",
+            "--project-root",
+            str(tmp_path),
+            "--experiment-id",
+            design.experiment_id,
+            "--run-id",
+            "run-bfi10-test-20260603142709",
+            "--retry-failed",
+        ]
+    )
+
+    settings = captured["settings"]
+    assert isinstance(settings, ModelSettings)
+    assert settings.max_attempts == 5
+    assert settings.initial_backoff_seconds == 0.5
+    assert settings.max_backoff_seconds == 8
+    assert settings.max_concurrency == 6
+    assert captured["run_id"] == "run-bfi10-test-20260603142709"
+    assert captured["retry_failed"] is True
+    assert isinstance(captured["cancel_event"], asyncio.Event)
+    assert result == 0
+    assert "run-bfi10-test-20260603142709" in capsys.readouterr().out
 
 
 def test_scale_score_cli_override_takes_precedence_over_design(

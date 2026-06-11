@@ -7,8 +7,19 @@ from loguru import logger
 from llm_behavior_lab.models import LlmQuestionResult, ModelSettings, Persona, ProviderCapabilities
 from llm_behavior_lab.questionnaires.base.scale import Questionnaire
 from llm_behavior_lab.questionnaires.bfi10 import BFI_10
-from llm_behavior_lab.responses.base import LikertAnswerValue, ResponseStatus
-from llm_behavior_lab.runner import run_questionnaire, run_questionnaire_async
+from llm_behavior_lab.responses.base import (
+    ChatMessage,
+    ItemResponseRecord,
+    LikertAnswerValue,
+    ResponseStatus,
+)
+from llm_behavior_lab.responses.item_ledgers import load_item_ledger
+from llm_behavior_lab.runner import (
+    _provider_snapshot,
+    _response_status,
+    run_questionnaire,
+    run_questionnaire_async,
+)
 
 TEST_PERSONA = Persona(
     persona_id="test_persona",
@@ -350,3 +361,224 @@ def test_run_questionnaire_reuses_session_for_multiple_runs(tmp_path) -> None:
         (experiment_root / "metadata.json").read_text(encoding="utf-8")
     )
     assert len(metadata["runs"]) == 2
+
+
+def test_run_questionnaire_resumes_after_completed_items(tmp_path) -> None:
+    run_id = "run-bfi10-llama3-1-20260603142709"
+    settings = ModelSettings(
+        model="llama3.1",
+        provider_base_url="http://localhost:11434/v1",
+        temperature=0.2,
+        timeout_seconds=60.0,
+    )
+    first_records = run_questionnaire(
+        run_id=run_id,
+        persona=TEST_PERSONA,
+        questionnaire=BFI_10,
+        settings=settings,
+        client=FakeSyncClient(),
+        project_root=tmp_path,
+        experiment_id="pilot-study-one",
+    )
+    response_path = (
+        tmp_path
+        / "experiments"
+        / "pilot-study-one"
+        / run_id
+        / "responses"
+        / f"{TEST_PERSONA.persona_id}.jsonl"
+    )
+    response_path.write_text(first_records[0].model_dump_json() + "\n", encoding="utf-8")
+    client = FakeSyncClient()
+
+    records = run_questionnaire(
+        run_id=run_id,
+        persona=TEST_PERSONA,
+        questionnaire=BFI_10,
+        settings=settings,
+        client=client,
+        project_root=tmp_path,
+        experiment_id="pilot-study-one",
+    )
+
+    assert len(client.calls) == len(BFI_10.items) - 1
+    assert [record.item_id for record in records] == [item.id for item in BFI_10.items]
+    assert len(load_item_ledger(response_path)) == len(BFI_10.items)
+    assert client.calls[0][1]["role"] == "user"
+    assert client.calls[0][1]["content"].startswith(BFI_10.items[0].text)
+    assert client.calls[0][2] == {"role": "assistant", "content": "1"}
+
+
+def test_run_questionnaire_requires_retry_failed_for_unsuccessful_items(tmp_path) -> None:
+    run_id = "run-bfi10-llama3-1-20260603142709"
+    settings = ModelSettings(
+        model="llama3.1",
+        provider_base_url="http://localhost:11434/v1",
+        temperature=0.2,
+        timeout_seconds=60.0,
+    )
+    run_questionnaire(
+        run_id=run_id,
+        persona=TEST_PERSONA,
+        questionnaire=BFI_10,
+        settings=settings,
+        client=FailingSyncClient(),
+        project_root=tmp_path,
+        experiment_id="pilot-study-one",
+    )
+    skipped_client = FakeSyncClient()
+
+    skipped = run_questionnaire(
+        run_id=run_id,
+        persona=TEST_PERSONA,
+        questionnaire=BFI_10,
+        settings=settings,
+        client=skipped_client,
+        project_root=tmp_path,
+        experiment_id="pilot-study-one",
+    )
+
+    assert skipped_client.calls == []
+    assert {record.status for record in skipped} == {ResponseStatus.FAILED}
+
+    retry_client = FakeSyncClient()
+    retried = run_questionnaire(
+        run_id=run_id,
+        persona=TEST_PERSONA,
+        questionnaire=BFI_10,
+        settings=settings,
+        client=retry_client,
+        project_root=tmp_path,
+        experiment_id="pilot-study-one",
+        retry_failed=True,
+    )
+    response_path = (
+        tmp_path
+        / "experiments"
+        / "pilot-study-one"
+        / run_id
+        / "responses"
+        / f"{TEST_PERSONA.persona_id}.jsonl"
+    )
+
+    assert len(retry_client.calls) == len(BFI_10.items)
+    assert {record.status for record in retried} == {ResponseStatus.COMPLETED}
+    assert len(load_item_ledger(response_path)) == len(BFI_10.items) * 2
+    run_record = json.loads((response_path.parents[1] / "run.json").read_text())
+    assert run_record["item_count"] == len(BFI_10.items)
+    assert run_record["error_count"] == 0
+
+
+@pytest.mark.anyio
+async def test_run_questionnaire_async_resumes_with_initial_history(tmp_path) -> None:
+    run_id = "run-bfi10-gpt-4-1-mini-20260603142709"
+    settings = ModelSettings(
+        model="gpt-4.1-mini",
+        provider_base_url="https://api.openai.com/v1",
+        temperature=0.2,
+        timeout_seconds=60.0,
+    )
+    first_client = FakeAsyncClient()
+    first_records = await run_questionnaire_async(
+        run_id=run_id,
+        persona=TEST_PERSONA,
+        questionnaire=BFI_10,
+        settings=settings,
+        client=first_client,
+        project_root=tmp_path,
+        experiment_id="pilot-study-one",
+    )
+    response_path = (
+        tmp_path
+        / "experiments"
+        / "pilot-study-one"
+        / run_id
+        / "responses"
+        / f"{TEST_PERSONA.persona_id}.jsonl"
+    )
+    response_path.write_text(first_records[0].model_dump_json() + "\n", encoding="utf-8")
+    client = FakeAsyncClient()
+    initial_history = [{"role": "system", "content": "Inherited history"}]
+
+    records = await run_questionnaire_async(
+        run_id=run_id,
+        persona=TEST_PERSONA,
+        questionnaire=BFI_10,
+        settings=settings,
+        client=client,
+        project_root=tmp_path,
+        experiment_id="pilot-study-one",
+        initial_history=initial_history,
+    )
+
+    assert len(records) == len(BFI_10.items)
+    assert len(client.calls) == len(BFI_10.items) - 1
+    assert client.calls[0][0] == initial_history[0]
+    assert client.calls[0][1]["content"].startswith(BFI_10.items[0].text)
+
+
+def test_response_status_uses_expected_effective_units() -> None:
+    record = _record_for_status(ResponseStatus.COMPLETED)
+
+    assert (
+        _response_status([record], expected_item_count=2)
+        is ResponseStatus.PARTIAL
+    )
+    assert (
+        _response_status([record], expected_item_count=1, cancelled=True)
+        is ResponseStatus.CANCELLED
+    )
+    assert (
+        _response_status(
+            [_record_for_status(ResponseStatus.FAILED)],
+            expected_item_count=1,
+        )
+        is ResponseStatus.FAILED
+    )
+    assert (
+        _response_status(
+            [_record_for_status(ResponseStatus.INVALID)],
+            expected_item_count=1,
+        )
+        is ResponseStatus.INVALID
+    )
+    assert (
+        _response_status([record], expected_item_count=1)
+        is ResponseStatus.COMPLETED
+    )
+
+
+def _record_for_status(status: ResponseStatus) -> ItemResponseRecord:
+    return ItemResponseRecord(
+        subject_id="subject-1",
+        session_id="session-1",
+        run_id="run-1",
+        questionnaire_id="example",
+        questionnaire_version="1.0",
+        item_id="item-1",
+        item_order=1,
+        item_text="Item",
+        response_format_type="likert",
+        messages=[ChatMessage(role="user", content="Question")],
+        status=status,
+    )
+
+
+def test_provider_snapshot_includes_execution_policy() -> None:
+    snapshot = _provider_snapshot(
+        ModelSettings(
+            model="test",
+            provider_base_url="http://localhost",
+            temperature=0,
+            timeout_seconds=10,
+            max_attempts=5,
+            initial_backoff_seconds=0.5,
+            max_backoff_seconds=8,
+            max_concurrency=6,
+        )
+    )
+
+    assert snapshot.max_attempts == 5
+    assert snapshot.initial_backoff_seconds == 0.5
+    assert snapshot.max_backoff_seconds == 8
+    assert snapshot.max_concurrency == 6

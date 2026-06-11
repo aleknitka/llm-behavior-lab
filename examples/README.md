@@ -8,6 +8,8 @@ Each example lives in its own directory with:
 
 Examples preview and validate their study design before any provider call. Expensive
 or artifact-producing cells must be guarded by an explicit user action.
+Provider retry and concurrency policy is persisted with each design so an
+interrupted run can be resumed with the same validated settings.
 
 ## Available Examples
 

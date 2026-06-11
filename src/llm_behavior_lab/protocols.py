@@ -10,6 +10,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from llm_behavior_lab.config import (
+    DEFAULT_INITIAL_BACKOFF_SECONDS,
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_BACKOFF_SECONDS,
+    DEFAULT_MAX_CONCURRENCY,
+)
 from llm_behavior_lab.personas.dimensions import Demographics
 from llm_behavior_lab.personas.factory import (
     GeneratedPersona,
@@ -42,6 +48,13 @@ class ProtocolProvider(BaseModel):
     base_url: str = Field(min_length=1)
     temperature: float = 0.0
     timeout_seconds: float = Field(default=60.0, gt=0)
+    max_attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, ge=1)
+    initial_backoff_seconds: float = Field(
+        default=DEFAULT_INITIAL_BACKOFF_SECONDS,
+        ge=0,
+    )
+    max_backoff_seconds: float = Field(default=DEFAULT_MAX_BACKOFF_SECONDS, ge=0)
+    max_concurrency: int = Field(default=DEFAULT_MAX_CONCURRENCY, ge=1)
     supports_structured_outputs: bool = False
     supports_logprobs: bool = True
 

@@ -184,9 +184,9 @@ conversation, scoring, and analysis ledgers use JSONL. Result exports resolve
 persona features from the experiment or cohort snapshot by `subject_id`; response
 records do not duplicate the persona document.
 
-If execution fails before a complete run is written, retain the partial files for
-diagnosis. Current staged execution does not resume partial runs; run the command
-again to create a separate run directory.
+The run snapshot is written with `partial` status before provider calls begin. Resume
+an interrupted staged run with `scale-run --run-id RUN_ID`; completed items are not
+called again. Pass `--retry-failed` to retry items whose latest attempt failed.
 
 ## 4. Scoring
 
