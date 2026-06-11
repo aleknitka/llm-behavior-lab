@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from llm_behavior_lab.behavioral_tasks.batch import run_persisted_task_batch_async
 from llm_behavior_lab.behavioral_tasks.catalog import resolve_behavioral_task
-from llm_behavior_lab.client import Message, OpenAiChatClient
+from llm_behavior_lab.client import AsyncOpenAiChatClient, Message, OpenAiChatClient
 from llm_behavior_lab.experiments import (
     ExperimentDesign,
     ScaleProcedureDesign,
@@ -40,7 +40,7 @@ from llm_behavior_lab.responses.base import (
     ResponseStatus,
     RunRecord,
 )
-from llm_behavior_lab.runner import run_persisted_persona_batch
+from llm_behavior_lab.runner import run_persisted_persona_batch_async
 from llm_behavior_lab.storage import (
     load_json_document,
     normalize_prefixed_uuid,
@@ -116,6 +116,8 @@ def create_protocol_run(
     cohort_id: str | None = None,
     persona_seed: int | None = None,
     run_seed: int | None = None,
+    run_id: str | None = None,
+    retry_failed: bool = False,
     api_key: str = "lm-studio",  # pragma: allowlist secret
     execute: bool = True,
 ) -> ProtocolRunResult:
@@ -127,54 +129,167 @@ def create_protocol_run(
         raise ValueError("protocol configuration differs; use a new experiment_id")
 
     experiment_root = _experiment_root(project_root, protocol.experiment_id)
-    effective_run_seed = run_seed if run_seed is not None else protocol.run_seed
-    if cohort_id is not None:
-        resolved_cohort_id = cohort_id
-        cohort_metadata = _load_cohort_metadata(
-            _cohort_root(experiment_root, resolved_cohort_id) / "metadata.json"
-        )
-        if cohort_metadata.protocol_fingerprint != protocol_fingerprint(protocol):
-            raise ValueError("cohort protocol fingerprint does not match experiment")
-        effective_persona_seed = cohort_metadata.persona_seed
+    existing_run: RunRecord | None = None
+    if run_id is not None:
+        run_root = experiment_root / run_id
+        if not (run_root / "run.json").exists():
+            raise FileNotFoundError(f"protocol run not found: {run_root}")
+        existing_run = load_json_document(run_root / "run.json", RunRecord)
+        metadata = existing_run.metadata
+        if metadata.get("protocol_fingerprint") != protocol_fingerprint(protocol):
+            raise ValueError("protocol fingerprint does not match resume request")
+        resolved_cohort_id = str(metadata["cohort_id"])
+        effective_persona_seed = metadata.get("persona_seed")
+        effective_run_seed = metadata.get("run_seed")
+        if cohort_id is not None and cohort_id != resolved_cohort_id:
+            raise ValueError("cohort does not match resumed protocol run")
+        if persona_seed is not None and persona_seed != effective_persona_seed:
+            raise ValueError("persona seed does not match resumed protocol run")
+        if run_seed is not None and run_seed != effective_run_seed:
+            raise ValueError("run seed does not match resumed protocol run")
+        resolved_run_id = run_id
     else:
-        effective_persona_seed = (
-            persona_seed if persona_seed is not None else protocol.persona_seed
-        )
-        resolved_cohort_id = _find_cohort(
-            experiment_root,
-            effective_persona_seed,
-        )
-        if resolved_cohort_id is None:
-            resolved_cohort_id = _create_cohort(
+        effective_run_seed = run_seed if run_seed is not None else protocol.run_seed
+        if cohort_id is not None:
+            resolved_cohort_id = cohort_id
+            cohort_metadata = _load_cohort_metadata(
+                _cohort_root(experiment_root, resolved_cohort_id) / "metadata.json"
+            )
+            if cohort_metadata.protocol_fingerprint != protocol_fingerprint(protocol):
+                raise ValueError("cohort protocol fingerprint does not match experiment")
+            effective_persona_seed = cohort_metadata.persona_seed
+        else:
+            effective_persona_seed = (
+                persona_seed if persona_seed is not None else protocol.persona_seed
+            )
+            resolved_cohort_id = _find_cohort(
                 experiment_root,
-                protocol,
                 effective_persona_seed,
             )
+            if resolved_cohort_id is None:
+                resolved_cohort_id = _create_cohort(
+                    experiment_root,
+                    protocol,
+                    effective_persona_seed,
+                )
+        started_at = datetime.now(UTC)
+        resolved_run_id = _next_protocol_run_id(
+            experiment_root,
+            protocol.provider.model,
+            started_at,
+        )
+        run_root = experiment_root / resolved_run_id
+        run_root.mkdir(parents=True)
+
     cohort_root = _cohort_root(experiment_root, resolved_cohort_id)
+    cohort_metadata = _load_cohort_metadata(cohort_root / "metadata.json")
+    if cohort_metadata.protocol_fingerprint != protocol_fingerprint(protocol):
+        raise ValueError("cohort protocol fingerprint does not match experiment")
     personas = _load_personas(cohort_root / "personas.json")
     assignments = _load_assignments(cohort_root / "protocol-assignments.json")
-
-    started_at = datetime.now(UTC)
-    run_id = _next_protocol_run_id(experiment_root, protocol.provider.model, started_at)
-    run_root = experiment_root / run_id
-    run_root.mkdir(parents=True)
+    subject_ids = [str(persona.subject_id) for persona in personas.personas]
     settings = ModelSettings(
         model=protocol.provider.model,
         provider_base_url=protocol.provider.base_url,
         temperature=protocol.provider.temperature,
         timeout_seconds=protocol.provider.timeout_seconds,
+        max_attempts=protocol.provider.max_attempts,
+        initial_backoff_seconds=protocol.provider.initial_backoff_seconds,
+        max_backoff_seconds=protocol.provider.max_backoff_seconds,
+        max_concurrency=protocol.provider.max_concurrency,
         seed=effective_run_seed,
         capabilities=ProviderCapabilities(
             supports_structured_outputs=protocol.provider.supports_structured_outputs,
             supports_logprobs=protocol.provider.supports_logprobs,
         ),
     )
-    step_results: list[ProtocolStepResult] = []
-    status = ResponseStatus.SKIPPED
-    histories: dict[str, list[Message]] = {}
+    provider_snapshot = ProviderSnapshot(
+        provider_base_url=protocol.provider.base_url,
+        model=protocol.provider.model,
+        temperature=protocol.provider.temperature,
+        timeout_seconds=protocol.provider.timeout_seconds,
+        max_attempts=protocol.provider.max_attempts,
+        initial_backoff_seconds=protocol.provider.initial_backoff_seconds,
+        max_backoff_seconds=protocol.provider.max_backoff_seconds,
+        max_concurrency=protocol.provider.max_concurrency,
+        supports_structured_outputs=protocol.provider.supports_structured_outputs,
+        supports_logprobs=protocol.provider.supports_logprobs,
+    )
+    if existing_run is not None:
+        if existing_run.provider != provider_snapshot:
+            raise ValueError("provider configuration does not match resumed protocol run")
+        if existing_run.subject_ids != subject_ids:
+            raise ValueError("persona cohort does not match resumed protocol run")
+        if (
+            existing_run.procedure_id != protocol.name
+            or existing_run.procedure_version != protocol.version
+        ):
+            raise ValueError("protocol identity does not match resumed protocol run")
+        started_at = existing_run.started_at
+        session_id = existing_run.session_id
+        persisted_results = [
+            ProtocolStepResult.model_validate(result)
+            for result in existing_run.metadata.get("step_results", [])
+        ]
+        expected_step_ids = [step.id for step in protocol.steps]
+        persisted_step_ids = [result.step_id for result in persisted_results]
+        if persisted_step_ids != expected_step_ids[: len(persisted_step_ids)]:
+            raise ValueError("protocol step state does not match resume request")
+    else:
+        session_id = normalize_prefixed_uuid("session-")
+        persisted_results = []
+
+    step_results = list(persisted_results)
+
+    def persist_run(
+        status: ResponseStatus,
+        *,
+        completed_at: datetime | None,
+    ) -> RunRecord:
+        run_record = RunRecord(
+            experiment_id=protocol.experiment_id,
+            session_id=session_id,
+            run_id=resolved_run_id,
+            subject_ids=subject_ids,
+            persona_count=len(personas.personas),
+            procedure_kind="protocol",
+            procedure_id=protocol.name,
+            procedure_version=protocol.version,
+            model_slug=slugify_model_name(protocol.provider.model),
+            provider=provider_snapshot,
+            started_at=started_at,
+            completed_at=completed_at,
+            status=status,
+            error_count=sum(
+                result.status in {ResponseStatus.FAILED, ResponseStatus.INVALID}
+                for result in step_results
+            ),
+            item_count=len(step_results),
+            output_paths={
+                "run": str(run_root / "run.json"),
+                "steps": str(run_root / "steps"),
+                "conversations": str(run_root / "conversations"),
+            },
+            metadata={
+                "protocol_fingerprint": protocol_fingerprint(protocol),
+                "cohort_id": resolved_cohort_id,
+                "persona_seed": effective_persona_seed,
+                "run_seed": effective_run_seed,
+                "step_results": [
+                    result.model_dump(mode="json") for result in step_results
+                ],
+            },
+        )
+        write_json_document(run_root / "run.json", run_record)
+        update_experiment_metadata(experiment_root / "metadata.json", run_record)
+        return run_record
+
+    if existing_run is None:
+        persist_run(ResponseStatus.PARTIAL, completed_at=None)
+
+    histories = _load_conversations(run_root / "conversations")
     if execute:
-        client = OpenAiChatClient(api_key=api_key, base_url=protocol.provider.base_url)
-        metadata = _response_metadata(
+        response_metadata = _response_metadata(
             protocol,
             resolved_cohort_id,
             effective_persona_seed,
@@ -182,28 +297,43 @@ def create_protocol_run(
             personas,
             assignments,
         )
-        status = ResponseStatus.COMPLETED
+        completed_by_id = {
+            result.step_id: result
+            for result in step_results
+            if result.status == ResponseStatus.COMPLETED
+        }
+        step_results = []
         for step in protocol.steps:
+            prior = completed_by_id.get(step.id)
+            if prior is not None:
+                step_results.append(prior)
+                continue
             step_root = run_root / "steps" / step.id
             inherited = histories if step.history == "inherit" else None
             if isinstance(step, ProtocolQuestionnaireStep):
-                result = run_persisted_persona_batch(
-                    personas=personas,
-                    questionnaire=resolve_questionnaire(
-                        step.questionnaire_id,
-                        step.questionnaire_parameters,
-                    ),
-                    settings=settings,
-                    client=client,
-                    project_root=project_root,
-                    context=step.context,
-                    response_metadata_by_subject={
-                        subject_id: {**values, "step_id": step.id}
-                        for subject_id, values in metadata.items()
-                    },
-                    initial_histories=inherited,
-                    run_id=run_id,
-                    run_root_override=step_root,
+                result = asyncio.run(
+                    run_persisted_persona_batch_async(
+                        personas=personas,
+                        questionnaire=resolve_questionnaire(
+                            step.questionnaire_id,
+                            step.questionnaire_parameters,
+                        ),
+                        settings=settings,
+                        client_factory=lambda: AsyncOpenAiChatClient(
+                            api_key=api_key,
+                            base_url=protocol.provider.base_url,
+                        ),
+                        project_root=project_root,
+                        context=step.context,
+                        response_metadata_by_subject={
+                            subject_id: {**values, "step_id": step.id}
+                            for subject_id, values in response_metadata.items()
+                        },
+                        initial_histories=inherited,
+                        run_id=resolved_run_id,
+                        run_root_override=step_root,
+                        retry_failed=retry_failed,
+                    )
                 )
                 histories = result.histories or {}
                 step_status = result.runs[0].status
@@ -214,12 +344,18 @@ def create_protocol_run(
                         personas=personas,
                         task=task,
                         settings=settings,
-                        client_factory=lambda: client,
+                        client_factory=lambda: OpenAiChatClient(
+                            api_key=api_key,
+                            base_url=protocol.provider.base_url,
+                        ),
                         project_root=project_root,
-                        run_id=run_id,
+                        run_id=resolved_run_id,
+                        concurrency=settings.max_concurrency,
+                        resume=True,
+                        retry_failed=retry_failed,
                         response_metadata_by_subject={
                             subject_id: {**values, "step_id": step.id}
-                            for subject_id, values in metadata.items()
+                            for subject_id, values in response_metadata.items()
                         },
                         initial_histories=inherited,
                         run_root_override=step_root,
@@ -236,54 +372,16 @@ def create_protocol_run(
                     output_path=str(step_root),
                 )
             )
-            status = _combined_status(status, step_status)
+            persist_run(ResponseStatus.PARTIAL, completed_at=None)
+        status = ResponseStatus.COMPLETED
+        for result in step_results:
+            status = _combined_status(status, result.status)
+    else:
+        status = ResponseStatus.SKIPPED
 
-    completed_at = datetime.now(UTC)
-    run_record = RunRecord(
-        experiment_id=protocol.experiment_id,
-        session_id=normalize_prefixed_uuid("session-"),
-        run_id=run_id,
-        subject_ids=[str(persona.subject_id) for persona in personas.personas],
-        persona_count=len(personas.personas),
-        procedure_kind="protocol",
-        procedure_id=protocol.name,
-        procedure_version=protocol.version,
-        model_slug=slugify_model_name(protocol.provider.model),
-        provider=ProviderSnapshot(
-            provider_base_url=protocol.provider.base_url,
-            model=protocol.provider.model,
-            temperature=protocol.provider.temperature,
-            timeout_seconds=protocol.provider.timeout_seconds,
-            supports_structured_outputs=protocol.provider.supports_structured_outputs,
-            supports_logprobs=protocol.provider.supports_logprobs,
-        ),
-        started_at=started_at,
-        completed_at=completed_at,
-        status=status,
-        error_count=sum(
-            result.status in {ResponseStatus.FAILED, ResponseStatus.INVALID}
-            for result in step_results
-        ),
-        item_count=len(step_results),
-        output_paths={
-            "run": str(run_root / "run.json"),
-            "steps": str(run_root / "steps"),
-            "conversations": str(run_root / "conversations"),
-        },
-        metadata={
-            "protocol_fingerprint": protocol_fingerprint(protocol),
-            "cohort_id": resolved_cohort_id,
-            "persona_seed": effective_persona_seed,
-            "run_seed": effective_run_seed,
-            "step_results": [
-                result.model_dump(mode="json") for result in step_results
-            ],
-        },
-    )
-    write_json_document(run_root / "run.json", run_record)
-    update_experiment_metadata(experiment_root / "metadata.json", run_record)
+    persist_run(status, completed_at=datetime.now(UTC))
     return ProtocolRunResult(
-        run_id=run_id,
+        run_id=resolved_run_id,
         run_root=run_root,
         cohort_id=resolved_cohort_id,
         step_results=step_results,
@@ -364,6 +462,10 @@ def _protocol_from_legacy_design(design: ExperimentDesign) -> UnifiedExperimentP
                 "base_url": design.provider.base_url,
                 "temperature": design.provider.temperature,
                 "timeout_seconds": design.provider.timeout_seconds,
+                "max_attempts": design.provider.max_attempts,
+                "initial_backoff_seconds": design.provider.initial_backoff_seconds,
+                "max_backoff_seconds": design.provider.max_backoff_seconds,
+                "max_concurrency": design.provider.max_concurrency,
                 "supports_structured_outputs": design.provider.supports_structured_outputs,
                 "supports_logprobs": design.provider.supports_logprobs,
             },
@@ -550,6 +652,8 @@ def _combined_status(
         ResponseStatus.SKIPPED: 1,
         ResponseStatus.INVALID: 2,
         ResponseStatus.FAILED: 3,
+        ResponseStatus.PARTIAL: 4,
+        ResponseStatus.CANCELLED: 5,
     }
     return new if order[new] > order[current] else current
 

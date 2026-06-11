@@ -194,11 +194,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _common_parser(protocol_create)
     protocol_create.add_argument("--file", type=Path, required=True)
-    protocol_create.add_argument("--new-run", action="store_true")
+    protocol_run = protocol_create.add_mutually_exclusive_group()
+    protocol_run.add_argument("--new-run", action="store_true")
+    protocol_run.add_argument("--run-id")
     cohort = protocol_create.add_mutually_exclusive_group()
     cohort.add_argument("--cohort-id")
     cohort.add_argument("--persona-seed", type=int)
     protocol_create.add_argument("--run-seed", type=int)
+    protocol_create.add_argument("--retry-failed", action="store_true", default=False)
     protocol_create.add_argument("--api-key")
 
     design = commands.add_parser(
@@ -533,11 +536,17 @@ def main(argv: list[str] | None = None) -> int:
             args.project_root / "experiments" / protocol.experiment_id
         )
         if not experiment_root.exists():
+            if args.run_id is not None:
+                raise ValueError("cannot resume a protocol experiment that does not exist")
             created = create_protocol_experiment(args.project_root, protocol)
             print(created.protocol_path)
             return 0
         load_protocol_experiment(args.project_root, protocol.experiment_id)
-        if not args.new_run:
+        if args.run_id is not None and (
+            args.cohort_id is not None or args.persona_seed is not None
+        ):
+            raise ValueError("--run-id cannot be combined with cohort or persona seed")
+        if args.run_id is None and not args.new_run:
             if not sys.stdin.isatty():
                 raise ValueError(
                     "experiment already exists; non-interactive callers must pass --new-run"
@@ -547,7 +556,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
         cohort_id = args.cohort_id
         persona_seed = args.persona_seed
-        if sys.stdin.isatty() and cohort_id is None and persona_seed is None:
+        if (
+            args.run_id is None
+            and sys.stdin.isatty()
+            and cohort_id is None
+            and persona_seed is None
+        ):
             answer = input("Reuse an existing persona cohort? [Y/n] ")
             if answer.strip().lower() in {"n", "no"}:
                 seed_text = input(
@@ -557,7 +571,7 @@ def main(argv: list[str] | None = None) -> int:
                     int(seed_text) if seed_text else protocol.persona_seed
                 )
         run_seed = args.run_seed
-        if sys.stdin.isatty() and run_seed is None:
+        if args.run_id is None and sys.stdin.isatty() and run_seed is None:
             seed_text = input(f"Run seed [{protocol.run_seed}]: ").strip()
             run_seed = int(seed_text) if seed_text else protocol.run_seed
         runtime = resolve_provider_config(
@@ -571,6 +585,8 @@ def main(argv: list[str] | None = None) -> int:
             cohort_id=cohort_id,
             persona_seed=persona_seed,
             run_seed=run_seed,
+            run_id=args.run_id,
+            retry_failed=args.retry_failed,
             api_key=runtime.api_key,
         )
         print(result.run_id)
