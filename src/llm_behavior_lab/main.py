@@ -2,7 +2,9 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import sys
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,10 +19,14 @@ from llm_behavior_lab.behavioral_tasks.catalog import (
     load_task_config,
     resolve_behavioral_task,
 )
-from llm_behavior_lab.client import OpenAiChatClient
+from llm_behavior_lab.client import AsyncOpenAiChatClient, OpenAiChatClient
 from llm_behavior_lab.config import (
     DEFAULT_API_BASE_URL,
     DEFAULT_API_KEY,
+    DEFAULT_INITIAL_BACKOFF_SECONDS,
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_BACKOFF_SECONDS,
+    DEFAULT_MAX_CONCURRENCY,
     DEFAULT_MODEL,
     DEFAULT_PROJECT_ROOT,
     DEFAULT_TEMPERATURE,
@@ -62,7 +68,7 @@ from llm_behavior_lab.questionnaires.catalog import (
     list_questionnaires,
     resolve_questionnaire,
 )
-from llm_behavior_lab.runner import run_persisted_persona_batch
+from llm_behavior_lab.runner import run_persisted_persona_batch_async
 from llm_behavior_lab.scoring import export_results, score_run
 from llm_behavior_lab.storage import load_json_document
 
@@ -102,6 +108,53 @@ def _persona_design_parser(parser: argparse.ArgumentParser) -> None:
         choices=[field.value for field in RequestedDemographicField],
     )
     parser.add_argument("--seed", type=int)
+
+
+def _provider_design_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--base-url", default=DEFAULT_API_BASE_URL)
+    parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS)
+    parser.add_argument(
+        "--initial-backoff",
+        type=float,
+        default=DEFAULT_INITIAL_BACKOFF_SECONDS,
+    )
+    parser.add_argument(
+        "--max-backoff",
+        type=float,
+        default=DEFAULT_MAX_BACKOFF_SECONDS,
+    )
+    parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=DEFAULT_MAX_CONCURRENCY,
+    )
+    parser.add_argument(
+        "--logprobs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--structured-outputs", action="store_true", default=False)
+
+
+async def _run_with_cancellation[ResultT](
+    operation: Callable[[asyncio.Event], Awaitable[ResultT]],
+) -> ResultT:
+    cancel_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    installed = False
+    try:
+        loop.add_signal_handler(signal.SIGINT, cancel_event.set)
+        installed = True
+    except (NotImplementedError, RuntimeError):
+        pass
+    try:
+        return await operation(cancel_event)
+    finally:
+        if installed:
+            loop.remove_signal_handler(signal.SIGINT)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -157,14 +210,9 @@ def build_parser() -> argparse.ArgumentParser:
     design.add_argument("--questionnaire-param", action="append", default=[])
     _persona_design_parser(design)
     design.add_argument("--protocol", type=Path)
-    design.add_argument("--model", default=DEFAULT_MODEL)
-    design.add_argument("--base-url", default=DEFAULT_API_BASE_URL)
-    design.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
-    design.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
+    _provider_design_parser(design)
     design.add_argument("--scoring-model-id")
     design.add_argument("--context")
-    design.add_argument("--logprobs", action=argparse.BooleanOptionalAction, default=True)
-    design.add_argument("--structured-outputs", action="store_true", default=False)
 
     personas = commands.add_parser("personas", help="Materialize personas from a design.")
     _common_parser(personas)
@@ -180,17 +228,14 @@ def build_parser() -> argparse.ArgumentParser:
     task_design.add_argument("--task-config", type=Path)
     _persona_design_parser(task_design)
     task_design.add_argument("--protocol", type=Path)
-    task_design.add_argument("--model", default=DEFAULT_MODEL)
-    task_design.add_argument("--base-url", default=DEFAULT_API_BASE_URL)
-    task_design.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
-    task_design.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
-    task_design.add_argument("--logprobs", action=argparse.BooleanOptionalAction, default=True)
-    task_design.add_argument("--structured-outputs", action="store_true", default=False)
+    _provider_design_parser(task_design)
 
     run = commands.add_parser("scale-run", help="Run persisted personas through a scale.")
     _common_parser(run)
     run.add_argument("--experiment-id", required=True)
     run.add_argument("--api-key")
+    run.add_argument("--run-id")
+    run.add_argument("--retry-failed", action="store_true", default=False)
 
     task_run = commands.add_parser(
         "task-run", help="Run persisted personas through a behavioral task."
@@ -199,10 +244,6 @@ def build_parser() -> argparse.ArgumentParser:
     task_run.add_argument("--experiment-id", required=True)
     task_run.add_argument("--api-key")
     task_run.add_argument("--run-id")
-    task_run.add_argument("--concurrency", type=int, default=4)
-    task_run.add_argument(
-        "--resume", action=argparse.BooleanOptionalAction, default=True
-    )
     task_run.add_argument("--retry-failed", action="store_true", default=False)
 
     score = commands.add_parser("scale-score", help="Score a completed scale run.")
@@ -574,6 +615,10 @@ def main(argv: list[str] | None = None) -> int:
                 base_url=args.base_url,
                 temperature=args.temperature,
                 timeout_seconds=args.timeout,
+                max_attempts=args.max_attempts,
+                initial_backoff_seconds=args.initial_backoff,
+                max_backoff_seconds=args.max_backoff,
+                max_concurrency=args.max_concurrency,
                 seed=args.seed,
                 supports_structured_outputs=args.structured_outputs,
                 supports_logprobs=args.logprobs,
@@ -604,6 +649,10 @@ def main(argv: list[str] | None = None) -> int:
             provider_base_url=runtime.base_url,
             temperature=design.provider.temperature,
             timeout_seconds=design.provider.timeout_seconds,
+            max_attempts=design.provider.max_attempts,
+            initial_backoff_seconds=design.provider.initial_backoff_seconds,
+            max_backoff_seconds=design.provider.max_backoff_seconds,
+            max_concurrency=design.provider.max_concurrency,
             seed=design.provider.seed,
             capabilities=ProviderCapabilities(
                 supports_structured_outputs=design.provider.supports_structured_outputs,
@@ -611,24 +660,34 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
         if args.command == "scale-run":
-            if not isinstance(design.procedure, ScaleProcedureDesign):
+            procedure = design.procedure
+            if not isinstance(procedure, ScaleProcedureDesign):
                 raise ValueError("experiment design is not a scale procedure")
-            result = run_persisted_persona_batch(
-                personas=load_personas(args.project_root, args.experiment_id),
-                questionnaire=resolve_questionnaire(
-                    design.procedure.questionnaire_id,
-                    design.procedure.questionnaire_parameters,
-                ),
-                settings=settings,
-                client=OpenAiChatClient(
-                    api_key=runtime.api_key, base_url=runtime.base_url
-                ),
-                project_root=args.project_root,
-                context=design.procedure.context,
-                response_metadata_by_subject=_assignment_metadata(
-                    args.project_root, args.experiment_id
-                ),
-            )
+
+            async def run_scale(cancel_event: asyncio.Event):
+                return await run_persisted_persona_batch_async(
+                    personas=load_personas(args.project_root, args.experiment_id),
+                    questionnaire=resolve_questionnaire(
+                        procedure.questionnaire_id,
+                        procedure.questionnaire_parameters,
+                    ),
+                    settings=settings,
+                    client_factory=lambda: AsyncOpenAiChatClient(
+                        api_key=runtime.api_key,
+                        base_url=runtime.base_url,
+                    ),
+                    project_root=args.project_root,
+                    context=procedure.context,
+                    response_metadata_by_subject=_assignment_metadata(
+                        args.project_root,
+                        args.experiment_id,
+                    ),
+                    run_id=args.run_id,
+                    retry_failed=args.retry_failed,
+                    cancel_event=cancel_event,
+                )
+
+            result = asyncio.run(_run_with_cancellation(run_scale))
             print(result.runs[0].run_id)
             return 0
         if not isinstance(design.procedure, TaskProcedureDesign):
@@ -646,8 +705,8 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 project_root=args.project_root,
                 run_id=args.run_id,
-                concurrency=args.concurrency,
-                resume=args.resume,
+                concurrency=settings.max_concurrency,
+                resume=True,
                 retry_failed=args.retry_failed,
                 response_metadata_by_subject=_assignment_metadata(
                     args.project_root, args.experiment_id
