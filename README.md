@@ -139,6 +139,10 @@ uv run llm-behavior-lab protocol-create \
   --run-id run-protocol-openai-gpt-oss-20b-20260611090000
 ```
 
+Resuming with `--run-id` reuses the persisted run, skips completed questionnaire
+items and task trials, and only retries the latest failed or invalid units when
+`--retry-failed` is set.
+
 Add `--retry-failed` only when the latest failed or invalid questionnaire items
 or task subjects should be attempted again. Repeating a resume with no eligible
 work performs no provider calls.
@@ -205,6 +209,10 @@ behavioral-task equivalent. Task runs support bounded cross-subject concurrency,
 explicit run resumption, and opt-in retries of failed or twice-invalid subjects.
 Questionnaire runs use the same explicit `--run-id` and `--retry-failed`
 semantics. Omitting `--run-id` always creates a new run.
+
+The run snapshot is written with `partial` status before provider calls begin.
+Resume an interrupted staged run with `scale-run --run-id RUN_ID`; completed
+items are not called again.
 
 `partial` means expected units are still absent. `cancelled` means cooperative
 cancellation was requested and persisted after active subjects finished. Local
