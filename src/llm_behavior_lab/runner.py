@@ -274,7 +274,7 @@ def _run_record(
     questionnaire: Questionnaire,
     settings: ModelSettings,
     started_at: datetime,
-    completed_at: datetime,
+    completed_at: datetime | None,
     records: Sequence[ItemResponseRecord],
     output_paths: dict[str, str],
     *,
@@ -304,9 +304,7 @@ def _run_record(
             cancelled=cancelled,
         ),
         error_count=sum(
-            1
-            for record in effective_records
-            if record.status == ResponseStatus.FAILED
+            1 for record in effective_records if record.status == ResponseStatus.FAILED
         ),
         item_count=len(effective_records),
         output_paths=output_paths,
@@ -333,11 +331,13 @@ def validate_questionnaire_resume(
     if persisted_questionnaire != questionnaire:
         raise ValueError("run questionnaire configuration does not match resume request")
 
-    existing = (
-        load_json_document(paths.run_path, RunRecord)
-        if paths.run_path.exists()
-        else None
-    )
+    existing = load_json_document(paths.run_path, RunRecord) if paths.run_path.exists() else None
+    existing_response_paths = list(paths.responses_root.glob("*.jsonl"))
+    if existing is None and existing_response_paths:
+        raise ValueError(
+            "existing response ledgers are missing their run manifest; "
+            "provider and session identity cannot be verified"
+        )
     if existing is not None:
         if existing.run_id != run_id:
             raise ValueError("run manifest ID does not match resume request")
@@ -347,10 +347,7 @@ def validate_questionnaire_resume(
             raise ValueError("run persona cohort does not match resume request")
 
     expected_subjects = set(subject_ids)
-    existing_subjects = {
-        response_path.stem
-        for response_path in paths.responses_root.glob("*.jsonl")
-    }
+    existing_subjects = {response_path.stem for response_path in existing_response_paths}
     unexpected = existing_subjects - expected_subjects
     if unexpected:
         raise ValueError(
@@ -361,6 +358,42 @@ def validate_questionnaire_resume(
         records = load_item_ledger(paths.response_path_for_subject(subject_id))
         validate_item_ledger(questionnaire, subject_id, run_id, records)
     return existing
+
+
+def _initialize_questionnaire_run(
+    *,
+    paths: ExperimentPaths,
+    experiment_id: str,
+    session_id: str,
+    run_id: str,
+    subject_ids: Sequence[str],
+    questionnaire: Questionnaire,
+    settings: ModelSettings,
+    started_at: datetime,
+    update_metadata: bool,
+) -> RunRecord:
+    _write_scale_copy(paths.scale_path, questionnaire)
+    run_record = _run_record(
+        experiment_id,
+        session_id,
+        run_id,
+        subject_ids,
+        len(subject_ids),
+        questionnaire,
+        settings,
+        started_at,
+        None,
+        [],
+        output_paths={
+            "run": str(paths.run_path),
+            "responses": str(paths.responses_root),
+            "scale": str(paths.scale_path),
+        },
+    )
+    write_json_document(paths.run_path, run_record)
+    if update_metadata:
+        update_experiment_metadata(paths.metadata_path, run_record)
+    return run_record
 
 
 def _next_run_id(
@@ -745,6 +778,7 @@ def run_persisted_persona_batch(
     run_id: str | None = None,
     run_root_override: Path | None = None,
     retry_failed: bool = False,
+    update_metadata: bool = True,
 ) -> BatchRunResult:
     """Run a previously materialized persona batch without regenerating subjects."""
     experiment_id = validate_experiment_id(personas.experiment_id)
@@ -774,6 +808,18 @@ def run_persisted_persona_batch(
     if existing_run is not None:
         session_id = existing_run.session_id
         started_at = existing_run.started_at
+    else:
+        _initialize_questionnaire_run(
+            paths=paths,
+            experiment_id=experiment_id,
+            session_id=session_id,
+            run_id=resolved_run_id,
+            subject_ids=subject_ids,
+            questionnaire=questionnaire,
+            settings=settings,
+            started_at=started_at,
+            update_metadata=update_metadata,
+        )
     all_records: list[ItemResponseRecord] = []
     histories: dict[str, list[Message]] = {}
     for generated_persona in personas.personas:
@@ -822,7 +868,8 @@ def run_persisted_persona_batch(
         },
     )
     write_json_document(paths.run_path, run_record)
-    update_experiment_metadata(paths.metadata_path, run_record)
+    if update_metadata:
+        update_experiment_metadata(paths.metadata_path, run_record)
     _write_scale_copy(paths.scale_path, questionnaire)
     return BatchRunResult(
         experiment_id=experiment_id,
@@ -847,6 +894,7 @@ async def run_persisted_persona_batch_async(
     run_root_override: Path | None = None,
     retry_failed: bool = False,
     cancel_event: asyncio.Event | None = None,
+    update_metadata: bool = True,
 ) -> BatchRunResult:
     """Run persisted questionnaire subjects concurrently within a fixed bound."""
     experiment_id = validate_experiment_id(personas.experiment_id)
@@ -876,6 +924,18 @@ async def run_persisted_persona_batch_async(
     if existing_run is not None:
         session_id = existing_run.session_id
         started_at = existing_run.started_at
+    else:
+        _initialize_questionnaire_run(
+            paths=paths,
+            experiment_id=experiment_id,
+            session_id=session_id,
+            run_id=resolved_run_id,
+            subject_ids=subject_ids,
+            questionnaire=questionnaire,
+            settings=settings,
+            started_at=started_at,
+            update_metadata=update_metadata,
+        )
     cancellation = cancel_event or asyncio.Event()
     semaphore = asyncio.Semaphore(settings.max_concurrency)
     records_by_subject: dict[str, list[ItemResponseRecord]] = {}
@@ -911,9 +971,7 @@ async def run_persisted_persona_batch_async(
                 records,
             )
 
-    await asyncio.gather(
-        *(run_subject(persona) for persona in personas.personas)
-    )
+    await asyncio.gather(*(run_subject(persona) for persona in personas.personas))
     all_records = [
         record
         for persona in personas.personas
@@ -939,7 +997,8 @@ async def run_persisted_persona_batch_async(
         cancelled=cancellation.is_set(),
     )
     write_json_document(paths.run_path, run_record)
-    update_experiment_metadata(paths.metadata_path, run_record)
+    if update_metadata:
+        update_experiment_metadata(paths.metadata_path, run_record)
     _write_scale_copy(paths.scale_path, questionnaire)
     return BatchRunResult(
         experiment_id=experiment_id,
@@ -965,11 +1024,7 @@ def _history_after_questionnaire(
         if record.status != ResponseStatus.COMPLETED:
             continue
         user_message = next(
-            (
-                message
-                for message in reversed(record.messages)
-                if message.role == "user"
-            ),
+            (message for message in reversed(record.messages) if message.role == "user"),
             None,
         )
         if user_message is None:

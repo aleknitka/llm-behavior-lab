@@ -52,7 +52,7 @@ from llm_behavior_lab.personas.factory import (
 )
 from llm_behavior_lab.protocol_runs import (
     create_protocol_experiment,
-    create_protocol_run,
+    create_protocol_run_async,
     load_protocol_experiment,
 )
 from llm_behavior_lab.protocols import (
@@ -272,9 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
     task_analyze.add_argument("--step-id")
     task_analyze.add_argument("--block-size", type=int, default=20)
 
-    task_results = commands.add_parser(
-        "task-results", help="Export behavioral-task results."
-    )
+    task_results = commands.add_parser("task-results", help="Export behavioral-task results.")
     _common_parser(task_results)
     task_results.add_argument("--experiment-id", required=True)
     task_results.add_argument("--run-id")
@@ -462,9 +460,7 @@ def _assignment_metadata(project_root: Path, experiment_id: str):
     if not normalized.exists() and not legacy.exists():
         return {}
     if normalized.exists() and legacy.exists():
-        normalized_assignments = load_json_document(
-            normalized, ProtocolAssignments
-        ).assignments
+        normalized_assignments = load_json_document(normalized, ProtocolAssignments).assignments
         legacy_assignments = [
             ProtocolAssignment.model_validate_json(line)
             for line in legacy.read_text(encoding="utf-8").splitlines()
@@ -531,17 +527,15 @@ def main(argv: list[str] | None = None) -> int:
             print(preview.generation_config.model_dump_json(indent=2))
         return 0
     if args.command == "protocol-create":
-        protocol = load_unified_protocol(args.file)
-        experiment_root = (
-            args.project_root / "experiments" / protocol.experiment_id
-        )
+        unified_protocol = load_unified_protocol(args.file)
+        experiment_root = args.project_root / "experiments" / unified_protocol.experiment_id
         if not experiment_root.exists():
             if args.run_id is not None:
                 raise ValueError("cannot resume a protocol experiment that does not exist")
-            created = create_protocol_experiment(args.project_root, protocol)
+            created = create_protocol_experiment(args.project_root, unified_protocol)
             print(created.protocol_path)
             return 0
-        load_protocol_experiment(args.project_root, protocol.experiment_id)
+        load_protocol_experiment(args.project_root, unified_protocol.experiment_id)
         if args.run_id is not None and (
             args.cohort_id is not None or args.persona_seed is not None
         ):
@@ -564,31 +558,32 @@ def main(argv: list[str] | None = None) -> int:
         ):
             answer = input("Reuse an existing persona cohort? [Y/n] ")
             if answer.strip().lower() in {"n", "no"}:
-                seed_text = input(
-                    f"Persona seed [{protocol.persona_seed}]: "
-                ).strip()
-                persona_seed = (
-                    int(seed_text) if seed_text else protocol.persona_seed
-                )
+                seed_text = input(f"Persona seed [{unified_protocol.persona_seed}]: ").strip()
+                persona_seed = int(seed_text) if seed_text else unified_protocol.persona_seed
         run_seed = args.run_seed
         if args.run_id is None and sys.stdin.isatty() and run_seed is None:
-            seed_text = input(f"Run seed [{protocol.run_seed}]: ").strip()
-            run_seed = int(seed_text) if seed_text else protocol.run_seed
+            seed_text = input(f"Run seed [{unified_protocol.run_seed}]: ").strip()
+            run_seed = int(seed_text) if seed_text else unified_protocol.run_seed
         runtime = resolve_provider_config(
-            protocol.provider.base_url,
+            unified_protocol.provider.base_url,
             args.api_key,
             load_env_file(args.project_root),
         )
-        result = create_protocol_run(
-            args.project_root,
-            protocol,
-            cohort_id=cohort_id,
-            persona_seed=persona_seed,
-            run_seed=run_seed,
-            run_id=args.run_id,
-            retry_failed=args.retry_failed,
-            api_key=runtime.api_key,
-        )
+
+        async def run_protocol(cancel_event: asyncio.Event):
+            return await create_protocol_run_async(
+                args.project_root,
+                unified_protocol,
+                cohort_id=cohort_id,
+                persona_seed=persona_seed,
+                run_seed=run_seed,
+                run_id=args.run_id,
+                retry_failed=args.retry_failed,
+                api_key=runtime.api_key,
+                cancel_event=cancel_event,
+            )
+
+        result = asyncio.run(_run_with_cancellation(run_protocol))
         print(result.run_id)
         return 0
     if args.command in {"scale-design", "task-design"}:
@@ -607,12 +602,10 @@ def main(argv: list[str] | None = None) -> int:
                 procedure.questionnaire_id, procedure.questionnaire_parameters
             )
             if procedure.scoring_model_id is not None and all(
-                model.id != procedure.scoring_model_id
-                for model in questionnaire.scoring_models
+                model.id != procedure.scoring_model_id for model in questionnaire.scoring_models
             ):
                 raise ValueError(
-                    f"unknown scoring model {procedure.scoring_model_id!r} "
-                    f"for {questionnaire.id}"
+                    f"unknown scoring model {procedure.scoring_model_id!r} for {questionnaire.id}"
                 )
         else:
             task_config = load_task_config(args.task_config)
@@ -708,9 +701,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not isinstance(design.procedure, TaskProcedureDesign):
             raise ValueError("experiment design is not a task procedure")
-        task = resolve_behavioral_task(
-            design.procedure.task_id, design.procedure.task_config
-        )
+        task = resolve_behavioral_task(design.procedure.task_id, design.procedure.task_config)
         result = asyncio.run(
             run_persisted_task_batch_async(
                 personas=load_personas(args.project_root, args.experiment_id),
@@ -738,9 +729,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("experiment design is not a scale procedure")
             default_scoring_model_id = design.procedure.scoring_model_id
         else:
-            protocol = load_protocol_experiment(
-                args.project_root, args.experiment_id
-            ).protocol
+            protocol = load_protocol_experiment(args.project_root, args.experiment_id).protocol
             step = next(
                 (step for step in protocol.steps if step.id == args.step_id),
                 None,
@@ -748,30 +737,22 @@ def main(argv: list[str] | None = None) -> int:
             if not isinstance(step, ProtocolQuestionnaireStep):
                 raise ValueError("protocol step is not a questionnaire")
             default_scoring_model_id = step.scoring_model_id
-        run_root = _procedure_root(
-            args.project_root, args.experiment_id, args.run_id, args.step_id
-        )
+        run_root = _procedure_root(args.project_root, args.experiment_id, args.run_id, args.step_id)
         scoring_model_id = args.scoring_model_id or default_scoring_model_id
         result = score_run(run_root, scoring_model_id)
         print(result.output_root)
         return 0
     if args.command == "scale-results":
-        run_root = _procedure_root(
-            args.project_root, args.experiment_id, args.run_id, args.step_id
-        )
+        run_root = _procedure_root(args.project_root, args.experiment_id, args.run_id, args.step_id)
         result = export_results(run_root, args.scoring_directory)
         print(result.output_root)
         return 0
     if args.command == "task-analyze":
-        run_root = _procedure_root(
-            args.project_root, args.experiment_id, args.run_id, args.step_id
-        )
+        run_root = _procedure_root(args.project_root, args.experiment_id, args.run_id, args.step_id)
         result = analyze_task_run(run_root, args.block_size)
         print(result.output_root)
         return 0
-    run_root = _procedure_root(
-        args.project_root, args.experiment_id, args.run_id, args.step_id
-    )
+    run_root = _procedure_root(args.project_root, args.experiment_id, args.run_id, args.step_id)
     result = export_task_results(run_root, args.analysis_directory)
     print(result.output_root)
     return 0

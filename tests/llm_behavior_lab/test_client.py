@@ -52,9 +52,7 @@ class FakeCompletions:
 def test_openai_client_retries_without_logprobs_when_provider_rejects_them() -> None:
     completions = FakeCompletions()
     client = OpenAiChatClient(api_key="test", base_url="http://localhost:1234/v1")
-    cast(Any, client)._client = SimpleNamespace(
-        chat=SimpleNamespace(completions=completions)
-    )
+    cast(Any, client)._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     settings = ModelSettings(
         model="local-model",
         provider_base_url="http://localhost:1234/v1",
@@ -77,9 +75,7 @@ def test_openai_client_retries_without_logprobs_when_provider_rejects_them() -> 
 def test_openai_client_passes_seed_to_provider() -> None:
     completions = FakeCompletions()
     client = OpenAiChatClient(api_key="test", base_url="http://localhost:1234/v1")
-    cast(Any, client)._client = SimpleNamespace(
-        chat=SimpleNamespace(completions=completions)
-    )
+    cast(Any, client)._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     settings = ModelSettings(
         model="local-model",
         provider_base_url="http://localhost:1234/v1",
@@ -185,9 +181,7 @@ def _settings(**updates: object) -> ModelSettings:
 
 @pytest.mark.parametrize("status_code", [408, 409, 429, 500, 503])
 def test_sync_client_retries_transient_statuses(status_code: int) -> None:
-    completions = SequencedCompletions(
-        [_status_error(status_code, retry_after="0"), _completion()]
-    )
+    completions = SequencedCompletions([_status_error(status_code, retry_after="0"), _completion()])
     sleeps: list[float] = []
     client = OpenAiChatClient(
         api_key="test",
@@ -210,12 +204,8 @@ def test_sync_client_retries_transient_statuses(status_code: int) -> None:
 @pytest.mark.parametrize(
     "error",
     [
-        APIConnectionError(
-            request=httpx.Request("POST", "http://localhost/v1/chat/completions")
-        ),
-        APITimeoutError(
-            request=httpx.Request("POST", "http://localhost/v1/chat/completions")
-        ),
+        APIConnectionError(request=httpx.Request("POST", "http://localhost/v1/chat/completions")),
+        APITimeoutError(request=httpx.Request("POST", "http://localhost/v1/chat/completions")),
     ],
 )
 def test_sync_client_retries_transport_errors(error: Exception) -> None:
@@ -269,10 +259,46 @@ def test_sync_client_does_not_retry_other_4xx_errors() -> None:
     assert len(completions.calls) == 1
 
 
-def test_sync_client_exhausts_max_attempts_with_capped_backoff() -> None:
-    completions = SequencedCompletions(
-        [_status_error(503), _status_error(503), _status_error(503)]
+def test_sync_client_does_not_treat_auth_error_as_logprobs_rejection() -> None:
+    completions = SequencedCompletions([_status_error(401)])
+    client = OpenAiChatClient(
+        api_key="test",
+        base_url="http://localhost",
+        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
+        sleep=lambda _: None,
     )
+
+    with pytest.raises(APIStatusError):
+        client.complete(
+            [{"role": "user", "content": "Question"}],
+            _settings(capabilities={"supports_logprobs": True}),
+            ["1"],
+        )
+
+    assert len(completions.calls) == 1
+
+
+def test_sync_client_does_not_treat_generic_bad_request_as_logprobs_rejection() -> None:
+    completions = SequencedCompletions([_status_error(400)])
+    client = OpenAiChatClient(
+        api_key="test",
+        base_url="http://localhost",
+        client=SimpleNamespace(chat=SimpleNamespace(completions=completions)),
+        sleep=lambda _: None,
+    )
+
+    with pytest.raises(APIStatusError):
+        client.complete(
+            [{"role": "user", "content": "Question"}],
+            _settings(capabilities={"supports_logprobs": True}),
+            ["1"],
+        )
+
+    assert len(completions.calls) == 1
+
+
+def test_sync_client_exhausts_max_attempts_with_capped_backoff() -> None:
+    completions = SequencedCompletions([_status_error(503), _status_error(503), _status_error(503)])
     sleeps: list[float] = []
     client = OpenAiChatClient(
         api_key="test",

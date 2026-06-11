@@ -76,9 +76,9 @@ def test_batch_generates_personas_and_runs_each_one_under_experiment(tmp_path) -
     assert (experiment_root / "metadata.json").exists()
     assert not (experiment_root / "sessions").exists()
 
-    metadata_rows = json.loads(
-        (experiment_root / "metadata.json").read_text(encoding="utf-8")
-    )["runs"]
+    metadata_rows = json.loads((experiment_root / "metadata.json").read_text(encoding="utf-8"))[
+        "runs"
+    ]
     assert len(metadata_rows) == 1
 
     assert run_root.name.startswith("run-bfi10-openai-gpt-oss-20b-")
@@ -87,9 +87,10 @@ def test_batch_generates_personas_and_runs_each_one_under_experiment(tmp_path) -
         "responses",
         "scale.json",
     }
-    assert json.loads((run_root / "run.json").read_text(encoding="utf-8"))[
-        "run_id"
-    ] == result.runs[0].run_id
+    assert (
+        json.loads((run_root / "run.json").read_text(encoding="utf-8"))["run_id"]
+        == result.runs[0].run_id
+    )
     assert len(list(responses_root.glob("*.jsonl"))) == 100
     for response_path in responses_root.glob("*.jsonl"):
         assert response_path.read_text(encoding="utf-8").count("\n") == 10
@@ -322,9 +323,7 @@ def test_protocol_runner_writes_protocol_artifacts_and_metadata(tmp_path) -> Non
 class AsyncCallState:
     active: int = 0
     max_active: int = 0
-    per_subject_items: dict[str, list[str]] = field(
-        default_factory=lambda: defaultdict(list)
-    )
+    per_subject_items: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
     two_active: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -391,8 +390,7 @@ async def test_async_batch_bounds_concurrency_and_keeps_subject_items_sequential
 
     assert state.max_active == 2
     assert state.per_subject_items == {
-        str(persona.subject_id): [item.id for item in BFI_10.items]
-        for persona in personas.personas
+        str(persona.subject_id): [item.id for item in BFI_10.items] for persona in personas.personas
     }
     assert result.runs[0].status is ResponseStatus.COMPLETED
 
@@ -431,11 +429,7 @@ async def test_async_batch_cancellation_stops_waiting_subjects(tmp_path) -> None
     )
     assert result.runs[0].status is ResponseStatus.CANCELLED
     responses_root = (
-        tmp_path
-        / "experiments"
-        / personas.experiment_id
-        / result.runs[0].run_id
-        / "responses"
+        tmp_path / "experiments" / personas.experiment_id / result.runs[0].run_id / "responses"
     )
     assert len(list(responses_root.glob("*.jsonl"))) == 2
 
@@ -472,12 +466,7 @@ async def test_async_batch_resume_is_idempotent_and_replaces_run_index_entry(
     )
 
     metadata = json.loads(
-        (
-            tmp_path
-            / "experiments"
-            / personas.experiment_id
-            / "metadata.json"
-        ).read_text()
+        (tmp_path / "experiments" / personas.experiment_id / "metadata.json").read_text()
     )
     assert resumed_state.per_subject_items == {}
     assert resumed.runs[0].started_at == first_started_at
@@ -534,7 +523,7 @@ async def test_async_batch_rejects_incompatible_resume_before_provider_calls(
 
 
 @pytest.mark.anyio
-async def test_async_batch_resumes_partial_ledgers_without_run_manifest(
+async def test_async_batch_rejects_partial_ledgers_without_run_manifest(
     tmp_path,
 ) -> None:
     personas = _persona_batch(1)
@@ -551,26 +540,50 @@ async def test_async_batch_resumes_partial_ledgers_without_run_manifest(
         client_factory=lambda: TrackingAsyncClient(AsyncCallState()),
         project_root=tmp_path,
     )
-    run_root = (
-        tmp_path
-        / "experiments"
-        / personas.experiment_id
-        / first.runs[0].run_id
-    )
+    run_root = tmp_path / "experiments" / personas.experiment_id / first.runs[0].run_id
     response_path = next((run_root / "responses").glob("*.jsonl"))
     first_line = response_path.read_text().splitlines()[0]
     response_path.write_text(first_line + "\n", encoding="utf-8")
     (run_root / "run.json").unlink()
-    state = AsyncCallState()
+    with pytest.raises(ValueError, match="missing their run manifest"):
+        await run_persisted_persona_batch_async(
+            personas=personas,
+            questionnaire=BFI_10,
+            settings=settings,
+            client_factory=lambda: TrackingAsyncClient(AsyncCallState()),
+            project_root=tmp_path,
+            run_id=first.runs[0].run_id,
+        )
 
-    resumed = await run_persisted_persona_batch_async(
+
+@pytest.mark.anyio
+async def test_async_batch_persists_partial_manifest_before_first_provider_call(
+    tmp_path,
+) -> None:
+    personas = _persona_batch(1)
+    settings = ModelSettings(
+        model="test",
+        provider_base_url="http://localhost",
+        temperature=0,
+        timeout_seconds=10,
+    )
+
+    class InspectingClient:
+        async def complete(self, messages, settings, allowed_answer_ids):
+            run_root = next((tmp_path / "experiments" / personas.experiment_id).glob("run-*"))
+            manifest = json.loads((run_root / "run.json").read_text())
+            assert manifest["status"] == "partial"
+            assert manifest["completed_at"] is None
+            assert (run_root / "scale.json").exists()
+            return LlmQuestionResult(
+                selected_answer_id=allowed_answer_ids[0],
+                raw_response=allowed_answer_ids[0],
+            )
+
+    await run_persisted_persona_batch_async(
         personas=personas,
         questionnaire=BFI_10,
         settings=settings,
-        client_factory=lambda: TrackingAsyncClient(state),
+        client_factory=InspectingClient,
         project_root=tmp_path,
-        run_id=first.runs[0].run_id,
     )
-
-    assert sum(map(len, state.per_subject_items.values())) == len(BFI_10.items) - 1
-    assert resumed.runs[0].status is ResponseStatus.COMPLETED

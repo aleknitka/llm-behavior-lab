@@ -109,7 +109,7 @@ def create_protocol_experiment(
     return ProtocolExperimentCreation(protocol_path=protocol_path, cohort_id=cohort_id)
 
 
-def create_protocol_run(
+async def create_protocol_run_async(
     project_root: Path,
     protocol: UnifiedExperimentProtocol,
     *,
@@ -120,6 +120,7 @@ def create_protocol_run(
     retry_failed: bool = False,
     api_key: str = "lm-studio",  # pragma: allowlist secret
     execute: bool = True,
+    cancel_event: asyncio.Event | None = None,
 ) -> ProtocolRunResult:
     """Create a distinct execution of an existing immutable protocol."""
     if cohort_id is not None and persona_seed is not None:
@@ -235,6 +236,12 @@ def create_protocol_run(
         persisted_step_ids = [result.step_id for result in persisted_results]
         if persisted_step_ids != expected_step_ids[: len(persisted_step_ids)]:
             raise ValueError("protocol step state does not match resume request")
+        seen_incomplete = False
+        for result in persisted_results:
+            if result.status != ResponseStatus.COMPLETED:
+                seen_incomplete = True
+            elif seen_incomplete:
+                raise ValueError("completed protocol steps cannot follow an incomplete step")
     else:
         session_id = normalize_prefixed_uuid("session-")
         persisted_results = []
@@ -275,9 +282,7 @@ def create_protocol_run(
                 "cohort_id": resolved_cohort_id,
                 "persona_seed": effective_persona_seed,
                 "run_seed": effective_run_seed,
-                "step_results": [
-                    result.model_dump(mode="json") for result in step_results
-                ],
+                "step_results": [result.model_dump(mode="json") for result in step_results],
             },
         )
         write_json_document(run_root / "run.json", run_record)
@@ -287,7 +292,8 @@ def create_protocol_run(
     if existing_run is None:
         persist_run(ResponseStatus.PARTIAL, completed_at=None)
 
-    histories = _load_conversations(run_root / "conversations")
+    histories: dict[str, list[Message]] = {}
+    cancellation = cancel_event or asyncio.Event()
     if execute:
         response_metadata = _response_metadata(
             protocol,
@@ -307,59 +313,62 @@ def create_protocol_run(
             prior = completed_by_id.get(step.id)
             if prior is not None:
                 step_results.append(prior)
+                histories = _load_conversations(run_root / "steps" / step.id / "conversations")
                 continue
+            if cancellation.is_set():
+                break
             step_root = run_root / "steps" / step.id
             inherited = histories if step.history == "inherit" else None
             if isinstance(step, ProtocolQuestionnaireStep):
-                result = asyncio.run(
-                    run_persisted_persona_batch_async(
-                        personas=personas,
-                        questionnaire=resolve_questionnaire(
-                            step.questionnaire_id,
-                            step.questionnaire_parameters,
-                        ),
-                        settings=settings,
-                        client_factory=lambda: AsyncOpenAiChatClient(
-                            api_key=api_key,
-                            base_url=protocol.provider.base_url,
-                        ),
-                        project_root=project_root,
-                        context=step.context,
-                        response_metadata_by_subject={
-                            subject_id: {**values, "step_id": step.id}
-                            for subject_id, values in response_metadata.items()
-                        },
-                        initial_histories=inherited,
-                        run_id=resolved_run_id,
-                        run_root_override=step_root,
-                        retry_failed=retry_failed,
-                    )
+                result = await run_persisted_persona_batch_async(
+                    personas=personas,
+                    questionnaire=resolve_questionnaire(
+                        step.questionnaire_id,
+                        step.questionnaire_parameters,
+                    ),
+                    settings=settings,
+                    client_factory=lambda: AsyncOpenAiChatClient(
+                        api_key=api_key,
+                        base_url=protocol.provider.base_url,
+                    ),
+                    project_root=project_root,
+                    context=step.context,
+                    response_metadata_by_subject={
+                        subject_id: {**values, "step_id": step.id}
+                        for subject_id, values in response_metadata.items()
+                    },
+                    initial_histories=inherited,
+                    run_id=resolved_run_id,
+                    run_root_override=step_root,
+                    retry_failed=retry_failed,
+                    cancel_event=cancellation,
+                    update_metadata=False,
                 )
                 histories = result.histories or {}
                 step_status = result.runs[0].status
+                _write_conversations(step_root / "conversations", histories)
             else:
                 task = resolve_behavioral_task(step.task_id, step.task_config)
-                task_run = asyncio.run(
-                    run_persisted_task_batch_async(
-                        personas=personas,
-                        task=task,
-                        settings=settings,
-                        client_factory=lambda: OpenAiChatClient(
-                            api_key=api_key,
-                            base_url=protocol.provider.base_url,
-                        ),
-                        project_root=project_root,
-                        run_id=resolved_run_id,
-                        concurrency=settings.max_concurrency,
-                        resume=True,
-                        retry_failed=retry_failed,
-                        response_metadata_by_subject={
-                            subject_id: {**values, "step_id": step.id}
-                            for subject_id, values in response_metadata.items()
-                        },
-                        initial_histories=inherited,
-                        run_root_override=step_root,
-                    )
+                task_run = await run_persisted_task_batch_async(
+                    personas=personas,
+                    task=task,
+                    settings=settings,
+                    client_factory=lambda: OpenAiChatClient(
+                        api_key=api_key,
+                        base_url=protocol.provider.base_url,
+                    ),
+                    project_root=project_root,
+                    run_id=resolved_run_id,
+                    concurrency=settings.max_concurrency,
+                    resume=True,
+                    retry_failed=retry_failed,
+                    response_metadata_by_subject={
+                        subject_id: {**values, "step_id": step.id}
+                        for subject_id, values in response_metadata.items()
+                    },
+                    initial_histories=inherited,
+                    run_root_override=step_root,
+                    cancel_event=cancellation,
                 )
                 histories = _load_conversations(step_root / "conversations")
                 step_status = task_run.status
@@ -373,9 +382,12 @@ def create_protocol_run(
                 )
             )
             persist_run(ResponseStatus.PARTIAL, completed_at=None)
-        status = ResponseStatus.COMPLETED
-        for result in step_results:
-            status = _combined_status(status, result.status)
+            if step_status != ResponseStatus.COMPLETED:
+                break
+        status = ResponseStatus.CANCELLED if cancellation.is_set() else ResponseStatus.COMPLETED
+        if status != ResponseStatus.CANCELLED:
+            for result in step_results:
+                status = _combined_status(status, result.status)
     else:
         status = ResponseStatus.SKIPPED
 
@@ -385,6 +397,33 @@ def create_protocol_run(
         run_root=run_root,
         cohort_id=resolved_cohort_id,
         step_results=step_results,
+    )
+
+
+def create_protocol_run(
+    project_root: Path,
+    protocol: UnifiedExperimentProtocol,
+    *,
+    cohort_id: str | None = None,
+    persona_seed: int | None = None,
+    run_seed: int | None = None,
+    run_id: str | None = None,
+    retry_failed: bool = False,
+    api_key: str = "lm-studio",  # pragma: allowlist secret
+    execute: bool = True,
+) -> ProtocolRunResult:
+    return asyncio.run(
+        create_protocol_run_async(
+            project_root,
+            protocol,
+            cohort_id=cohort_id,
+            persona_seed=persona_seed,
+            run_seed=run_seed,
+            run_id=run_id,
+            retry_failed=retry_failed,
+            api_key=api_key,
+            execute=execute,
+        )
     )
 
 
@@ -405,9 +444,7 @@ def load_protocol_experiment(
     design_path = experiment_root / "design.json"
     if not design_path.exists():
         raise FileNotFoundError(f"experiment protocol not found: {experiment_root}")
-    design = ExperimentDesign.model_validate_json(
-        design_path.read_text(encoding="utf-8")
-    )
+    design = ExperimentDesign.model_validate_json(design_path.read_text(encoding="utf-8"))
     return LoadedProtocolExperiment(
         protocol=_protocol_from_legacy_design(design),
         source="design.json",
@@ -482,12 +519,10 @@ def _validate_protocol_references(protocol: UnifiedExperimentProtocol) -> None:
                 step.questionnaire_parameters,
             )
             if step.scoring_model_id is not None and all(
-                model.id != step.scoring_model_id
-                for model in questionnaire.scoring_models
+                model.id != step.scoring_model_id for model in questionnaire.scoring_models
             ):
                 raise ValueError(
-                    f"unknown scoring model {step.scoring_model_id!r} "
-                    f"for {questionnaire.id}"
+                    f"unknown scoring model {step.scoring_model_id!r} for {questionnaire.id}"
                 )
         else:
             resolve_behavioral_task(step.task_id, step.task_config)
@@ -573,9 +608,7 @@ def _load_assignments(path: Path) -> dict[str, ProtocolAssignment]:
         else None
     )
     normalized_assignments = (
-        load_json_document(path, ProtocolAssignments).assignments
-        if path.exists()
-        else None
+        load_json_document(path, ProtocolAssignments).assignments if path.exists() else None
     )
     if (
         normalized_assignments is not None
@@ -583,8 +616,7 @@ def _load_assignments(path: Path) -> dict[str, ProtocolAssignment]:
         and normalized_assignments != legacy_assignments
     ):
         raise ValueError(
-            "conflicting canonical snapshot files: "
-            f"{path.name} and {legacy_path.name}"
+            f"conflicting canonical snapshot files: {path.name} and {legacy_path.name}"
         )
     assignments = normalized_assignments or legacy_assignments or []
     return {assignment.subject_id: assignment for assignment in assignments}
@@ -665,10 +697,7 @@ def _next_protocol_run_id(
 ) -> str:
     candidate = started_at
     while True:
-        run_id = (
-            f"run-protocol-{slugify_model_name(model)}-"
-            f"{candidate.strftime('%Y%m%d%H%M%S')}"
-        )
+        run_id = f"run-protocol-{slugify_model_name(model)}-{candidate.strftime('%Y%m%d%H%M%S')}"
         if not (experiment_root / run_id).exists():
             return run_id
         candidate += timedelta(seconds=1)

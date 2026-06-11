@@ -76,6 +76,12 @@ def _is_retryable_error(exc: Exception) -> bool:
     )
 
 
+def _is_logprobs_rejection(exc: Exception) -> bool:
+    if isinstance(exc, APIStatusError) and exc.status_code not in {400, 422}:
+        return False
+    return "logprob" in str(exc).lower()
+
+
 def _retry_after_seconds(exc: Exception) -> float | None:
     if not isinstance(exc, APIStatusError):
         return None
@@ -149,7 +155,11 @@ class OpenAiChatClient:
                     )
                     self._sleep(delay)
                     continue
-                if logprobs is not True or attempt >= settings.max_attempts:
+                if (
+                    logprobs is not True
+                    or attempt >= settings.max_attempts
+                    or not _is_logprobs_rejection(exc)
+                ):
                     raise
                 logger.warning("Provider rejected logprobs; retrying without logprobs")
                 logprobs = None
@@ -212,7 +222,11 @@ class AsyncOpenAiChatClient:
                     )
                     await self._sleep(delay)
                     continue
-                if logprobs is not True or attempt >= settings.max_attempts:
+                if (
+                    logprobs is not True
+                    or attempt >= settings.max_attempts
+                    or not _is_logprobs_rejection(exc)
+                ):
                     raise
                 logger.warning("Provider rejected logprobs; retrying without logprobs")
                 logprobs = None
