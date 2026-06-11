@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from llm_behavior_lab.personas.factory import PersonaBatch
 from llm_behavior_lab.responses.base import (
     ItemResponseRecord,
     MultipleChoiceAnswerValue,
@@ -14,6 +15,10 @@ from llm_behavior_lab.responses.base import (
     TextAnswerValue,
 )
 from llm_behavior_lab.responses.base.values import LikertAnswerValue
+from llm_behavior_lab.storage import (
+    load_json_document,
+    resolve_compatible_snapshot_path,
+)
 
 TABLE_COLUMNS = [
     "subject_id",
@@ -42,15 +47,24 @@ TABLE_COLUMNS = [
 
 def load_response_table(path: Path) -> list[dict[str, Any]]:
     rows = [_row_from_record(record) for record in _load_records(path)]
+    personas = _load_personas_for_responses(path)
+    for row in rows:
+        features = personas.get(str(row["subject_id"]))
+        if features is not None:
+            row.update({f"persona_{key}": value for key, value in features.items()})
     return sorted(rows, key=lambda row: (str(row["subject_id"]), int(row["item_order"])))
 
 
 def write_response_table_csv(rows: Iterable[dict[str, Any]], path: Path) -> None:
+    materialized = list(rows)
+    extra_columns = sorted(
+        {key for row in materialized for key in row if key not in TABLE_COLUMNS}
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=TABLE_COLUMNS, extrasaction="ignore")
+        writer = csv.DictWriter(file, fieldnames=[*TABLE_COLUMNS, *extra_columns])
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(materialized)
 
 
 def _load_records(path: Path) -> list[ItemResponseRecord]:
@@ -71,6 +85,65 @@ def _load_jsonl_file(path: Path) -> list[ItemResponseRecord]:
             continue
         records.append(ItemResponseRecord.model_validate(json.loads(line)))
     return records
+
+
+def _load_personas_for_responses(path: Path) -> dict[str, dict[str, Any]]:
+    run_root = _run_root_from_response_path(path)
+    if run_root is None:
+        return {}
+    canonical_run_root = _canonical_run_root(run_root)
+    experiment_root = canonical_run_root.parent
+    cohort_id = _cohort_id_from_run(canonical_run_root)
+    snapshot_root = (
+        experiment_root / "cohorts" / cohort_id
+        if cohort_id is not None
+        else experiment_root
+    )
+    personas_path = resolve_compatible_snapshot_path(
+        snapshot_root / "personas.json",
+        snapshot_root / "personas.jsonl",
+    )
+    if not personas_path.exists():
+        return {}
+    batch = load_json_document(personas_path, PersonaBatch)
+    return {
+        str(persona.subject_id): persona.features.model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+        for persona in batch.personas
+    }
+
+
+def _run_root_from_response_path(path: Path) -> Path | None:
+    if path.is_file():
+        return path.parent.parent if path.parent.name == "responses" else None
+    if path.name == "responses":
+        return path.parent
+    if (path / "responses").is_dir():
+        return path
+    return None
+
+
+def _cohort_id_from_run(run_root: Path) -> str | None:
+    run_path = run_root / "run.json"
+    if not run_path.exists():
+        return None
+    payload = json.loads(run_path.read_text(encoding="utf-8"))
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    cohort_id = metadata.get("cohort_id")
+    return cohort_id if isinstance(cohort_id, str) else None
+
+
+def _canonical_run_root(path: Path) -> Path:
+    for candidate in (path, *path.parents):
+        if (candidate.parent / "protocol.json").exists() or (
+            candidate.parent / "design.json"
+        ).exists():
+            return candidate
+    return path
 
 
 def _row_from_record(record: ItemResponseRecord) -> dict[str, Any]:

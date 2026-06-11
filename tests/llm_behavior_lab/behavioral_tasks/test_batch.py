@@ -51,7 +51,7 @@ def test_async_batch_isolates_subject_ledgers_and_writes_run_metadata(tmp_path) 
     run_root = tmp_path / "experiments" / "card-batch-one" / run.run_id
     response_paths = sorted((run_root / "responses").glob("*.jsonl"))
     schedule_paths = sorted((run_root / "schedules").glob("*.json"))
-    row = json.loads((run_root / "run.jsonl").read_text(encoding="utf-8"))
+    row = json.loads((run_root / "run.json").read_text(encoding="utf-8"))
 
     assert len(response_paths) == 2
     assert all(path.read_text(encoding="utf-8").count("\n") == 2 for path in response_paths)
@@ -101,10 +101,11 @@ def test_batch_resume_preserves_run_session_id(tmp_path) -> None:
     )
 
     run_path = (
-        tmp_path / "experiments" / "card-batch-two" / first.run_id / "run.jsonl"
+        tmp_path / "experiments" / "card-batch-two" / first.run_id / "run.json"
     )
-    rows = [
-        json.loads(line)
-        for line in run_path.read_text(encoding="utf-8").splitlines()
-    ]
-    assert {row["session_id"] for row in rows} == {first.session_id}
+    row = json.loads(run_path.read_text(encoding="utf-8"))
+    metadata = json.loads(
+        (run_path.parents[1] / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert row["session_id"] == first.session_id
+    assert [run["run_id"] for run in metadata["runs"]] == [first.run_id]

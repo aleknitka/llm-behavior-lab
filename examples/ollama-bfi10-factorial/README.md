@@ -43,3 +43,32 @@ The notebook uses:
 
 Use a new valid three-part experiment ID for another run. Generated artifacts
 are written under `experiments/{experiment_id}/` and must not be committed.
+
+The staged factorial workflow writes complete snapshots as JSON:
+
+```text
+experiments/{experiment_id}/
+  design.json
+  protocol.json
+  base_personas.json
+  personas.json
+  protocol_assignments.json
+  metadata.json
+  run-bfi10-{model}-{timestamp}/
+    run.json
+    scale.json
+    responses/{subject_id}.jsonl
+    scoring/default-1.0/
+      scores.jsonl
+      reliability.jsonl
+    results/default-1.0/
+      responses.csv
+      scores.csv
+      reliability.csv
+      summary.json
+```
+
+The persona and assignment files are validated collection documents rather
+than JSONL streams. Item responses and derived scoring units remain append-only
+JSONL. Response rows reference personas by `subject_id`; `responses.csv` joins
+the persisted persona snapshot and includes `persona_*` columns.

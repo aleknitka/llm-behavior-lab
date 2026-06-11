@@ -216,6 +216,10 @@ class ProtocolAssignment(BaseModel):
     factor_level_ids: dict[str, str]
 
 
+class ProtocolAssignments(BaseModel):
+    assignments: list[ProtocolAssignment] = Field(default_factory=list)
+
+
 class ProtocolExpansion(BaseModel):
     protocol: ExperimentProtocol
     base_personas: PersonaBatch

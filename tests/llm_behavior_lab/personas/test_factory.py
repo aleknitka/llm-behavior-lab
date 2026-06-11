@@ -403,7 +403,7 @@ def test_write_persona_batch_jsonl_creates_experiment_dump(tmp_path) -> None:
 
     path = write_persona_batch_jsonl(tmp_path, batch)
 
-    assert path == tmp_path / "experiments" / "friendly-run-one" / "personas.jsonl"
+    assert path == tmp_path / "experiments" / "friendly-run-one" / "personas.json"
     dump = json.loads(path.read_text(encoding="utf-8"))
     assert dump["metadata"] == {
         "experiment_id": "friendly-run-one",

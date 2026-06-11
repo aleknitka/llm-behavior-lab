@@ -345,7 +345,7 @@ def test_cli_and_python_persona_creation_are_equivalent(tmp_path: Path, capsys) 
 
     assert load_personas(cli_root, "parity-study-one") == python_batch
     assert "Created 3 personas at" in output
-    assert "personas.jsonl" in output
+    assert "personas.json" in output
 
 
 def test_personas_cli_requires_replace_to_overwrite(tmp_path: Path, capsys) -> None:

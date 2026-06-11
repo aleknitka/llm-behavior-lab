@@ -27,6 +27,7 @@ from llm_behavior_lab.personas.factory import (
 from llm_behavior_lab.protocols import (
     ExperimentProtocol,
     ProtocolAssignment,
+    ProtocolAssignments,
     ProtocolQuestionnaireStep,
     UnifiedExperimentProtocol,
     expand_protocol_personas,
@@ -41,12 +42,14 @@ from llm_behavior_lab.responses.base import (
 )
 from llm_behavior_lab.runner import run_persisted_persona_batch
 from llm_behavior_lab.storage import (
-    append_jsonl_record,
+    load_json_document,
     normalize_prefixed_uuid,
+    resolve_compatible_snapshot_path,
     slugify_model_name,
+    update_experiment_metadata,
     validate_experiment_id,
-    write_jsonl_records,
-    write_persona_batch_jsonl_at_path,
+    write_json_document,
+    write_persona_batch_at_path,
 )
 
 
@@ -97,7 +100,7 @@ def create_protocol_experiment(
     if protocol_path.exists() or (experiment_root / "design.json").exists():
         raise FileExistsError(f"experiment already exists: {experiment_root}")
     experiment_root.mkdir(parents=True, exist_ok=True)
-    protocol_path.write_text(protocol.model_dump_json(indent=2), encoding="utf-8")
+    write_json_document(protocol_path, protocol)
     cohort_id = _create_cohort(
         experiment_root,
         protocol,
@@ -148,8 +151,8 @@ def create_protocol_run(
                 effective_persona_seed,
             )
     cohort_root = _cohort_root(experiment_root, resolved_cohort_id)
-    personas = _load_personas(cohort_root / "personas.jsonl")
-    assignments = _load_assignments(cohort_root / "protocol-assignments.jsonl")
+    personas = _load_personas(cohort_root / "personas.json")
+    assignments = _load_assignments(cohort_root / "protocol-assignments.json")
 
     started_at = datetime.now(UTC)
     run_id = _next_protocol_run_id(experiment_root, protocol.provider.model, started_at)
@@ -263,7 +266,7 @@ def create_protocol_run(
         ),
         item_count=len(step_results),
         output_paths={
-            "run": str(run_root / "run.jsonl"),
+            "run": str(run_root / "run.json"),
             "steps": str(run_root / "steps"),
             "conversations": str(run_root / "conversations"),
         },
@@ -277,8 +280,8 @@ def create_protocol_run(
             ],
         },
     )
-    append_jsonl_record(run_root / "run.jsonl", run_record)
-    append_jsonl_record(experiment_root / "metadata.jsonl", run_record)
+    write_json_document(run_root / "run.json", run_record)
+    update_experiment_metadata(experiment_root / "metadata.json", run_record)
     return ProtocolRunResult(
         run_id=run_id,
         run_root=run_root,
@@ -417,8 +420,11 @@ def _create_cohort(
                 generation_config=protocol.personas.generation_config,
             )
         )
-    write_persona_batch_jsonl_at_path(cohort_root / "personas.jsonl", personas)
-    write_jsonl_records(cohort_root / "protocol-assignments.jsonl", assignments)
+    write_persona_batch_at_path(cohort_root / "personas.json", personas)
+    write_json_document(
+        cohort_root / "protocol-assignments.json",
+        ProtocolAssignments(assignments=assignments),
+    )
     metadata = CohortMetadata(
         cohort_id=cohort_id,
         experiment_id=protocol.experiment_id,
@@ -427,10 +433,7 @@ def _create_cohort(
         persona_count=len(personas.personas),
         created_at=datetime.now(UTC),
     )
-    (cohort_root / "metadata.json").write_text(
-        metadata.model_dump_json(indent=2),
-        encoding="utf-8",
-    )
+    write_json_document(cohort_root / "metadata.json", metadata)
     return cohort_id
 
 
@@ -450,17 +453,38 @@ def _load_cohort_metadata(path: Path) -> CohortMetadata:
 
 
 def _load_personas(path: Path) -> PersonaBatch:
-    return PersonaBatch.model_validate_json(path.read_text(encoding="utf-8"))
+    resolved = resolve_compatible_snapshot_path(path, path.with_suffix(".jsonl"))
+    return load_json_document(resolved, PersonaBatch)
 
 
 def _load_assignments(path: Path) -> dict[str, ProtocolAssignment]:
-    if not path.exists():
+    legacy_path = path.with_suffix(".jsonl")
+    if not path.exists() and not legacy_path.exists():
         return {}
-    assignments = [
-        ProtocolAssignment.model_validate_json(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    legacy_assignments = (
+        [
+            ProtocolAssignment.model_validate_json(line)
+            for line in legacy_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if legacy_path.exists()
+        else None
+    )
+    normalized_assignments = (
+        load_json_document(path, ProtocolAssignments).assignments
+        if path.exists()
+        else None
+    )
+    if (
+        normalized_assignments is not None
+        and legacy_assignments is not None
+        and normalized_assignments != legacy_assignments
+    ):
+        raise ValueError(
+            "conflicting canonical snapshot files: "
+            f"{path.name} and {legacy_path.name}"
+        )
+    assignments = normalized_assignments or legacy_assignments or []
     return {assignment.subject_id: assignment for assignment in assignments}
 
 

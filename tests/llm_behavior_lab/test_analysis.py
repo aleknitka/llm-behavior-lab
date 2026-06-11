@@ -1,6 +1,11 @@
 import csv
 
 from llm_behavior_lab.analysis import load_response_table, write_response_table_csv
+from llm_behavior_lab.personas.factory import (
+    PersonaFactory,
+    PersonaFactoryRequest,
+    RequestedDemographicField,
+)
 from llm_behavior_lab.responses.base import (
     ChatMessage,
     ItemResponseRecord,
@@ -133,6 +138,92 @@ def test_load_response_table_accepts_run_directory(tmp_path) -> None:
     )
 
     assert len(load_response_table(run_root)) == 1
+
+
+def test_load_response_table_joins_persona_features_by_subject_id(tmp_path) -> None:
+    experiment_root = tmp_path / "experiments" / "join-study-one"
+    run_root = experiment_root / "run-bfi10-model-20260603120000"
+    batch = PersonaFactory().create_demographics_batch(
+        PersonaFactoryRequest(
+            count=1,
+            requested_fields={
+                RequestedDemographicField.AGE,
+                RequestedDemographicField.COUNTRY,
+            },
+            seed=7,
+            experiment_id="join-study-one",
+        )
+    )
+    subject_id = str(batch.personas[0].subject_id)
+    (experiment_root / "personas.json").parent.mkdir(parents=True)
+    (experiment_root / "personas.json").write_text(batch.model_dump_json())
+    _write_response(
+        run_root / "responses" / f"{subject_id}.jsonl",
+        ItemResponseRecord(
+            subject_id=subject_id,
+            session_id="session-1",
+            run_id=run_root.name,
+            questionnaire_id="bfi_10",
+            questionnaire_version="1.0",
+            item_id="bfi10_01_reserved",
+            item_order=1,
+            item_text="Question",
+            response_format_type="likert",
+            messages=[],
+            answer=LikertAnswerValue(value=1),
+            raw_response="1",
+            status=ResponseStatus.COMPLETED,
+        ),
+    )
+
+    rows = load_response_table(run_root)
+
+    assert rows[0]["persona_age"] == batch.personas[0].features.age
+    assert rows[0]["persona_country"] == batch.personas[0].features.country
+
+
+def test_load_response_table_joins_protocol_step_to_cohort_persona(tmp_path) -> None:
+    experiment_root = tmp_path / "experiments" / "join-protocol-one"
+    protocol_run_root = experiment_root / "run-protocol-model-20260603120000"
+    step_root = protocol_run_root / "steps" / "questionnaire"
+    cohort_root = experiment_root / "cohorts" / "cohort-test"
+    batch = PersonaFactory().create_demographics_batch(
+        PersonaFactoryRequest(
+            count=1,
+            requested_fields={RequestedDemographicField.AGE},
+            seed=8,
+            experiment_id="join-protocol-one",
+        )
+    )
+    subject_id = str(batch.personas[0].subject_id)
+    cohort_root.mkdir(parents=True)
+    (cohort_root / "personas.json").write_text(batch.model_dump_json())
+    (experiment_root / "protocol.json").write_text("{}")
+    protocol_run_root.mkdir(parents=True)
+    (protocol_run_root / "run.json").write_text(
+        '{"metadata":{"cohort_id":"cohort-test"}}'
+    )
+    _write_response(
+        step_root / "responses" / f"{subject_id}.jsonl",
+        ItemResponseRecord(
+            subject_id=subject_id,
+            session_id="session-1",
+            run_id=protocol_run_root.name,
+            questionnaire_id="bfi_10",
+            questionnaire_version="1.0",
+            item_id="item-1",
+            item_order=1,
+            item_text="Question",
+            response_format_type="likert",
+            messages=[],
+            answer=LikertAnswerValue(value=1),
+            status=ResponseStatus.COMPLETED,
+        ),
+    )
+
+    rows = load_response_table(step_root)
+
+    assert rows[0]["persona_age"] == batch.personas[0].features.age
 
 
 def test_write_response_table_csv_writes_stable_columns(tmp_path) -> None:

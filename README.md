@@ -183,22 +183,22 @@ Canonical protocol experiments:
 ```text
 experiments/{experiment_id}/
   protocol.json
-  metadata.jsonl
+  metadata.json
   cohorts/
     cohort-{uuid}/
-      personas.jsonl
+      personas.json
       metadata.json
-      protocol-assignments.jsonl
+      protocol-assignments.json
   run-protocol-{model}-{timestamp}/
-    run.jsonl
+    run.json
     conversations/{subject_id}.jsonl
     steps/
       {questionnaire_step}/
-        run.jsonl
+        run.json
         scale.json
         responses/{subject_id}.jsonl
       {task_step}/
-        run.jsonl
+        run.json
         task.json
         schedules/{subject_id}.json
         conversations/{subject_id}.jsonl
@@ -207,6 +207,34 @@ experiments/{experiment_id}/
 
 Staged scale and task experiments retain their existing
 `run-{questionnaire}-...` and `run-task-{task}-...` layouts.
+
+Snapshot documents and manifests use readable JSON and are replaced atomically.
+Item, trial, conversation, scoring, and analysis-unit ledgers remain JSONL so
+successful units are durable without rewriting prior records.
+
+`metadata.json` is a validated run index with this top-level shape:
+
+```json
+{
+  "version": "1.0",
+  "experiment_id": "pilot-study-one",
+  "runs": []
+}
+```
+
+`protocol_assignments.json` and cohort `protocol-assignments.json` store
+assignments as `{"assignments": [...]}` so entries remain addressable by stable
+subject ID.
+
+Response records reference personas by `subject_id`; they do not duplicate the
+full persona. Result exports resolve persona features from the experiment or
+cohort `personas.json` snapshot and expose them as `persona_*` columns.
+
+Compatibility loaders recognize legacy persona, protocol-assignment, and
+experiment-metadata `.jsonl` snapshots. If both legacy and normalized files are
+present with different contents, loading fails with a conflict error. Legacy
+`run.jsonl` manifests are not used for task resumption and should be migrated to
+`run.json`.
 
 Experiment IDs contain exactly three lowercase alphanumeric parts separated by
 hyphens, such as `pilot-study-one`.

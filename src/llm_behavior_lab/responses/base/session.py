@@ -59,3 +59,11 @@ class RunRecord(BaseModel):
     item_count: int = Field(ge=0)
     output_paths: dict[str, str]
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExperimentMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: str = "1.0"
+    experiment_id: str
+    runs: list[RunRecord] = Field(default_factory=list)

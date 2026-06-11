@@ -25,6 +25,7 @@ from llm_behavior_lab.storage import (
     normalize_prefixed_uuid,
     resolve_experiment_paths,
     validate_experiment_id,
+    write_json_document,
 )
 
 
@@ -282,8 +283,7 @@ def _write_once(path: Path, model: BaseModel) -> None:
         if existing != model:
             raise ValueError(f"persisted artifact does not match requested value: {path}")
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(model.model_dump_json(indent=2), encoding="utf-8")
+    write_json_document(path, model)
 
 
 def _write_conversation(path: Path, messages: list[Message]) -> None:

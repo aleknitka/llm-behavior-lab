@@ -52,6 +52,7 @@ from llm_behavior_lab.protocol_runs import (
 from llm_behavior_lab.protocols import (
     ExperimentProtocol,
     ProtocolAssignment,
+    ProtocolAssignments,
     ProtocolQuestionnaireStep,
     UnifiedExperimentProtocol,
 )
@@ -63,6 +64,7 @@ from llm_behavior_lab.questionnaires.catalog import (
 )
 from llm_behavior_lab.runner import run_persisted_persona_batch
 from llm_behavior_lab.scoring import export_results, score_run
+from llm_behavior_lab.storage import load_json_document
 
 LOG_LEVELS = ("TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL")
 
@@ -410,12 +412,36 @@ def _procedure_root(
 
 
 def _assignment_metadata(project_root: Path, experiment_id: str):
-    path = project_root / "experiments" / experiment_id / "protocol_assignments.jsonl"
-    if not path.exists():
+    experiment_root = project_root / "experiments" / experiment_id
+    normalized = experiment_root / "protocol_assignments.json"
+    legacy = experiment_root / "protocol_assignments.jsonl"
+    if not normalized.exists() and not legacy.exists():
         return {}
+    if normalized.exists() and legacy.exists():
+        normalized_assignments = load_json_document(
+            normalized, ProtocolAssignments
+        ).assignments
+        legacy_assignments = [
+            ProtocolAssignment.model_validate_json(line)
+            for line in legacy.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if normalized_assignments != legacy_assignments:
+            raise ValueError(
+                "conflicting canonical snapshot files: "
+                "protocol_assignments.json and protocol_assignments.jsonl"
+            )
+        assignments = normalized_assignments
+    elif normalized.exists():
+        assignments = load_json_document(normalized, ProtocolAssignments).assignments
+    else:
+        assignments = [
+            ProtocolAssignment.model_validate_json(line)
+            for line in legacy.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
     output = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        assignment = ProtocolAssignment.model_validate_json(line)
+    for assignment in assignments:
         output[assignment.subject_id] = {
             "base_subject_id": assignment.base_subject_id,
             "condition_id": assignment.condition_id,
@@ -563,7 +589,7 @@ def main(argv: list[str] | None = None) -> int:
             design,
             replace=args.replace,
         )
-        path = args.project_root / "experiments" / args.experiment_id / "personas.jsonl"
+        path = args.project_root / "experiments" / args.experiment_id / "personas.json"
         print(f"Created {len(batch.personas)} personas at {path}")
         return 0
     if args.command in {"scale-run", "task-run"}:

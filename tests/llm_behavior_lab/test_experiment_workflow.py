@@ -63,7 +63,7 @@ def test_staged_scale_workflow_produces_analysis_ready_results(
     result_root = run_root / "results" / "default-1.0"
 
     assert (experiment_root / "design.json").exists()
-    assert (experiment_root / "personas.jsonl").exists()
+    assert (experiment_root / "personas.json").exists()
     assert (run_root / "scale.json").exists()
     assert len(list((run_root / "responses").glob("*.jsonl"))) == 2
     assert (run_root / "scoring" / "default-1.0" / "scores.jsonl").exists()

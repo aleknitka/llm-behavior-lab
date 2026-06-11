@@ -12,10 +12,12 @@ from llm_behavior_lab.models import ModelSettings, Persona
 from llm_behavior_lab.personas.factory import GeneratedPersona, PersonaBatch
 from llm_behavior_lab.responses.base import ProviderSnapshot, ResponseStatus, RunRecord
 from llm_behavior_lab.storage import (
-    append_jsonl_record,
+    load_json_document,
     normalize_prefixed_uuid,
     resolve_experiment_paths,
     slugify_model_name,
+    update_experiment_metadata,
+    write_json_document,
 )
 
 
@@ -54,7 +56,7 @@ async def run_persisted_task_batch_async(
     paths.run_root.mkdir(parents=True, exist_ok=True)
     task_path = paths.run_root / "task.json"
     if not task_path.exists():
-        task_path.write_text(task.config.model_dump_json(indent=2), encoding="utf-8")
+        write_json_document(task_path, task.config)
     elif task.config != type(task.config).model_validate_json(
         task_path.read_text(encoding="utf-8")
     ):
@@ -143,8 +145,8 @@ async def run_persisted_task_batch_async(
             "concurrency": concurrency,
         },
     )
-    append_jsonl_record(paths.run_path, run_record)
-    append_jsonl_record(paths.metadata_path, run_record)
+    write_json_document(paths.run_path, run_record)
+    update_experiment_metadata(paths.metadata_path, run_record)
     return run_record
 
 
@@ -159,10 +161,7 @@ def _runtime_persona(persona: GeneratedPersona) -> Persona:
 def _existing_session_id(run_path: Path) -> str | None:
     if not run_path.exists():
         return None
-    for line in run_path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            return RunRecord.model_validate_json(line).session_id
-    return None
+    return load_json_document(run_path, RunRecord).session_id
 
 
 def _next_task_run_id(

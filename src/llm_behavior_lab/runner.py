@@ -24,6 +24,7 @@ from llm_behavior_lab.prompting import render_persona_intro
 from llm_behavior_lab.protocols import (
     ExperimentProtocol,
     ProtocolAssignment,
+    ProtocolAssignments,
     expand_protocol_personas,
 )
 from llm_behavior_lab.questionnaires.base.response_formats import (
@@ -55,10 +56,11 @@ from llm_behavior_lab.storage import (
     normalize_prefixed_uuid,
     resolve_experiment_paths,
     slugify_model_name,
+    update_experiment_metadata,
     validate_experiment_id,
-    write_jsonl_records,
-    write_persona_batch_jsonl,
-    write_persona_batch_jsonl_at_path,
+    write_json_document,
+    write_persona_batch,
+    write_persona_batch_at_path,
 )
 
 Message = dict[str, str]
@@ -279,8 +281,7 @@ def _run_record(
 
 
 def _write_scale_copy(path: Path, questionnaire: Questionnaire) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(questionnaire.model_dump_json(indent=2), encoding="utf-8")
+    write_json_document(path, questionnaire)
 
 
 def _next_run_id(
@@ -453,8 +454,8 @@ def run_questionnaire(
         },
     )
     if write_session_record:
-        append_jsonl_record(paths.run_path, run_record)
-        append_jsonl_record(paths.metadata_path, run_record)
+        write_json_document(paths.run_path, run_record)
+        update_experiment_metadata(paths.metadata_path, run_record)
         _write_scale_copy(paths.scale_path, questionnaire)
     logger.info(
         "Completed questionnaire run {run_id} status={status} errors={error_count} "
@@ -530,7 +531,7 @@ def run_persona_questionnaire_batch(
             generation_config=persona_config or PersonaGenerationConfig(),
         )
     )
-    personas_path = write_persona_batch_jsonl(project_root, personas)
+    personas_path = write_persona_batch(project_root, personas)
     logger.info(
         "Wrote persona batch experiment_id={experiment_id} personas_path={personas_path}",
         experiment_id=resolved_experiment_id,
@@ -609,8 +610,8 @@ def run_persona_questionnaire_batch(
             "scale": str(paths.scale_path),
         },
     )
-    append_jsonl_record(paths.run_path, run_record)
-    append_jsonl_record(paths.metadata_path, run_record)
+    write_json_document(paths.run_path, run_record)
+    update_experiment_metadata(paths.metadata_path, run_record)
     _write_scale_copy(paths.scale_path, questionnaire)
     logger.info(
         "Completed persona questionnaire batch experiment_id={experiment_id} "
@@ -704,8 +705,8 @@ def run_persisted_persona_batch(
             "scale": str(paths.scale_path),
         },
     )
-    append_jsonl_record(paths.run_path, run_record)
-    append_jsonl_record(paths.metadata_path, run_record)
+    write_json_document(paths.run_path, run_record)
+    update_experiment_metadata(paths.metadata_path, run_record)
     _write_scale_copy(paths.scale_path, questionnaire)
     return BatchRunResult(
         experiment_id=experiment_id,
@@ -811,13 +812,13 @@ def run_protocol_experiment(
         run_id=run_id,
     )
     paths.protocol_path.parent.mkdir(parents=True, exist_ok=True)
-    paths.protocol_path.write_text(
-        protocol.model_dump_json(indent=2),
-        encoding="utf-8",
+    write_json_document(paths.protocol_path, protocol)
+    write_persona_batch_at_path(paths.base_personas_path, expansion.base_personas)
+    write_persona_batch_at_path(paths.personas_path, expansion.personas)
+    write_json_document(
+        paths.protocol_assignments_path,
+        ProtocolAssignments(assignments=expansion.assignments),
     )
-    write_persona_batch_jsonl_at_path(paths.base_personas_path, expansion.base_personas)
-    write_persona_batch_jsonl_at_path(paths.personas_path, expansion.personas)
-    write_jsonl_records(paths.protocol_assignments_path, expansion.assignments)
 
     assignments_by_subject = {
         assignment.subject_id: assignment for assignment in expansion.assignments
@@ -878,8 +879,8 @@ def run_protocol_experiment(
             "assignments": str(paths.protocol_assignments_path),
         },
     )
-    append_jsonl_record(paths.run_path, run_record)
-    append_jsonl_record(paths.metadata_path, run_record)
+    write_json_document(paths.run_path, run_record)
+    update_experiment_metadata(paths.metadata_path, run_record)
     _write_scale_copy(paths.scale_path, questionnaire)
     logger.info(
         "Completed protocol experiment experiment_id={experiment_id} "
@@ -1051,8 +1052,8 @@ async def run_questionnaire_async(
         },
     )
     if write_session_record:
-        append_jsonl_record(paths.run_path, run_record)
-        append_jsonl_record(paths.metadata_path, run_record)
+        write_json_document(paths.run_path, run_record)
+        update_experiment_metadata(paths.metadata_path, run_record)
         _write_scale_copy(paths.scale_path, questionnaire)
     logger.info(
         "Completed async questionnaire run {run_id} status={status} errors={error_count} "

@@ -85,15 +85,12 @@ def test_run_questionnaire_retains_context_and_saves_records(tmp_path) -> None:
         / "responses"
         / f"{TEST_PERSONA.persona_id}.jsonl"
     )
-    run_path = response_path.parents[1] / "run.jsonl"
-    metadata_path = response_path.parents[2] / "metadata.jsonl"
+    run_path = response_path.parents[1] / "run.json"
+    metadata_path = response_path.parents[2] / "metadata.json"
     scale_path = response_path.parents[1] / "scale.json"
     assert response_path.read_text(encoding="utf-8").count("\n") == len(BFI_10.items)
-    assert run_path.read_text(encoding="utf-8").count("\n") == 1
-    metadata_rows = [
-        json.loads(line) for line in metadata_path.read_text(encoding="utf-8").splitlines()
-    ]
-    run_rows = [json.loads(line) for line in run_path.read_text(encoding="utf-8").splitlines()]
+    metadata_rows = json.loads(metadata_path.read_text(encoding="utf-8"))["runs"]
+    run_rows = [json.loads(run_path.read_text(encoding="utf-8"))]
     response_rows = [json.loads(line) for line in response_path.read_text().splitlines()]
     assert len(metadata_rows) == 1
     assert metadata_rows[0]["run_id"] == records[0].run_id
@@ -136,7 +133,7 @@ def test_run_questionnaire_sets_and_persists_seed_for_each_item(tmp_path) -> Non
     record_seeds = [record.metadata["seed"] for record in records]
     assert client.seeds == record_seeds
     assert len(set(record_seeds)) == len(BFI_10.items)
-    run_path = tmp_path / "experiments" / "pilot-study-one" / records[0].run_id / "run.jsonl"
+    run_path = tmp_path / "experiments" / "pilot-study-one" / records[0].run_id / "run.json"
     run_row = json.loads(run_path.read_text(encoding="utf-8"))
     assert run_row["metadata"]["base_seed"] == 123
 
@@ -185,7 +182,7 @@ def test_run_questionnaire_saves_failure_records(tmp_path) -> None:
         / f"{TEST_PERSONA.persona_id}.jsonl"
     )
     assert response_path.read_text(encoding="utf-8").count("\n") == len(BFI_10.items)
-    run_row = json.loads((response_path.parents[1] / "run.jsonl").read_text(encoding="utf-8"))
+    run_row = json.loads((response_path.parents[1] / "run.json").read_text(encoding="utf-8"))
     assert run_row["status"] == ResponseStatus.FAILED
     assert run_row["error_count"] == len(BFI_10.items)
 
@@ -347,6 +344,9 @@ def test_run_questionnaire_reuses_session_for_multiple_runs(tmp_path) -> None:
     assert (
         experiment_root / second_run_id / "responses" / f"{TEST_PERSONA.persona_id}.jsonl"
     ).exists()
-    assert (experiment_root / first_run_id / "run.jsonl").exists()
-    assert (experiment_root / second_run_id / "run.jsonl").exists()
-    assert (experiment_root / "metadata.jsonl").read_text(encoding="utf-8").count("\n") == 2
+    assert (experiment_root / first_run_id / "run.json").exists()
+    assert (experiment_root / second_run_id / "run.json").exists()
+    metadata = json.loads(
+        (experiment_root / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert len(metadata["runs"]) == 2
