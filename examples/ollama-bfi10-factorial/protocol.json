@@ -1,76 +1,91 @@
 {
   "version": "1.0",
-  "name": "uk-age-affluence-urbanicity-factorial",
-  "design": "paired_factorial",
-  "base_persona_count": 5,
-  "seed": 20260609,
-  "iterations": 5,
-  "requested_fields": [
-    "age",
-    "affluence_level",
-    "country",
-    "urbanicity"
-  ],
-  "base_persona_config": {
-    "field_probabilities": {
-      "country": {
-        "GB": 1.0
+  "experiment_id": "ollama-bfi-ten",
+  "name": "UK age, affluence, and urbanicity BFI-10 factorial",
+  "persona_seed": 20260609,
+  "run_seed": 20260609,
+  "personas": {
+    "count": 1,
+    "requested_fields": [
+      "age",
+      "affluence_level",
+      "country",
+      "urbanicity"
+    ],
+    "generation_config": {
+      "field_probabilities": {
+        "country": {
+          "GB": 1.0
+        }
       }
+    },
+    "factorial": {
+      "version": "1.0",
+      "name": "uk-age-affluence-urbanicity-factorial",
+      "design": "paired_factorial",
+      "base_persona_count": 1,
+      "iterations": 1,
+      "requested_fields": [
+        "age",
+        "affluence_level",
+        "country",
+        "urbanicity"
+      ],
+      "base_persona_config": {
+        "field_probabilities": {
+          "country": {
+            "GB": 1.0
+          }
+        }
+      },
+      "factors": [
+        {
+          "name": "age",
+          "field": "age",
+          "levels": [
+            {"id": "age_25", "value": 25, "label": "Age 25"},
+            {"id": "age_65", "value": 65, "label": "Age 65"}
+          ]
+        },
+        {
+          "name": "affluence",
+          "field": "affluence_level",
+          "levels": [
+            {"id": "low", "value": "low", "label": "Low"},
+            {"id": "middle", "value": "middle", "label": "Middle"},
+            {"id": "high", "value": "high", "label": "High"}
+          ]
+        },
+        {
+          "name": "urbanicity",
+          "field": "urbanicity",
+          "levels": [
+            {"id": "urban", "value": "urban", "label": "Urban"},
+            {"id": "rural", "value": "rural", "label": "Rural"}
+          ]
+        }
+      ]
     }
   },
-  "factors": [
+  "provider": {
+    "model": "gemma4:12b",
+    "base_url": "http://localhost:11434/v1",
+    "temperature": 0,
+    "timeout_seconds": 60,
+    "max_attempts": 3,
+    "initial_backoff_seconds": 1,
+    "max_backoff_seconds": 30,
+    "max_concurrency": 1,
+    "supports_structured_outputs": false,
+    "supports_logprobs": false
+  },
+  "steps": [
     {
-      "name": "age",
-      "field": "age",
-      "levels": [
-        {
-          "id": "age_25",
-          "value": 25,
-          "label": "Age 25"
-        },
-        {
-          "id": "age_65",
-          "value": 65,
-          "label": "Age 65"
-        }
-      ]
-    },
-    {
-      "name": "affluence",
-      "field": "affluence_level",
-      "levels": [
-        {
-          "id": "low",
-          "value": "low",
-          "label": "Low"
-        },
-        {
-          "id": "middle",
-          "value": "middle",
-          "label": "Middle"
-        },
-        {
-          "id": "high",
-          "value": "high",
-          "label": "High"
-        }
-      ]
-    },
-    {
-      "name": "urbanicity",
-      "field": "urbanicity",
-      "levels": [
-        {
-          "id": "urban",
-          "value": "urban",
-          "label": "Urban"
-        },
-        {
-          "id": "rural",
-          "value": "rural",
-          "label": "Rural"
-        }
-      ]
+      "id": "personality",
+      "kind": "questionnaire",
+      "questionnaire_id": "bfi_10",
+      "scoring_model_id": "default",
+      "history": "reset"
     }
   ]
 }

@@ -13,19 +13,17 @@ def _():
 
     from llm_behavior_lab.main import main
     from llm_behavior_lab.protocols import (
-        ExperimentProtocol,
+        UnifiedExperimentProtocol,
         expand_protocol_personas,
     )
-    from llm_behavior_lab.storage import validate_experiment_id
 
     return (
-        ExperimentProtocol,
         Path,
+        UnifiedExperimentProtocol,
         expand_protocol_personas,
         json,
         main,
         mo,
-        validate_experiment_id,
     )
 
 
@@ -35,25 +33,28 @@ def _(mo):
     # Ollama BFI-10 factorial example
 
     Preview a reproducible UK age x affluence x urbanicity design before
-    explicitly starting its 3,000 local model calls.
+    explicitly starting its 120 local model calls.
     """)
     return
 
 
 @app.cell
-def _(ExperimentProtocol, Path, expand_protocol_personas, json):
+def _(Path, UnifiedExperimentProtocol, expand_protocol_personas, json):
     example_root = Path(__file__).resolve().parent
     project_root = example_root.parents[1]
     protocol_path = example_root / "protocol.json"
-    protocol = ExperimentProtocol.model_validate(
+    protocol = UnifiedExperimentProtocol.model_validate(
         json.loads(protocol_path.read_text(encoding="utf-8"))
     )
-    expansion = expand_protocol_personas(protocol, "ollama-bfi-ten")
-    return expansion, project_root, protocol, protocol_path
+    factorial = protocol.personas.factorial
+    if factorial is None:
+        raise RuntimeError("example protocol must contain a factorial persona design")
+    expansion = expand_protocol_personas(factorial, protocol.experiment_id)
+    return expansion, factorial, project_root, protocol, protocol_path
 
 
 @app.cell
-def _(expansion, mo, protocol):
+def _(expansion, factorial, mo):
     condition_rows_by_id = {}
     for assignment in expansion.assignments:
         condition_rows_by_id.setdefault(
@@ -69,7 +70,7 @@ def _(expansion, mo, protocol):
     preview = {
         "base_personas": len(expansion.base_personas.personas),
         "conditions": len(condition_rows),
-        "iterations": protocol.iterations,
+        "iterations": factorial.iterations,
         "expanded_personas": len(expansion.personas.personas),
         "questionnaire_calls": len(expansion.personas.personas) * 10,
     }
@@ -93,115 +94,100 @@ def _(expansion, mo, protocol):
 
 
 @app.cell
-def _(mo):
-    experiment_id = mo.ui.text(
-        value="ollama-bfi-ten",
-        label="Experiment ID",
-        full_width=True,
-    )
+def _(mo, protocol):
     run_button = mo.ui.run_button(
         label="Run experiment",
         kind="danger",
-        tooltip="Creates experiment artifacts and starts 3,000 Ollama calls.",
+        tooltip="Creates experiment artifacts and starts 120 Ollama calls.",
     )
     mo.vstack(
         [
             mo.md(
-                """
+                f"""
                 ## Live execution
 
                 This is the only control that creates files or contacts Ollama.
-                A complete run can take substantial time.
+                The immutable experiment ID is `{protocol.experiment_id}`.
                 """
             ),
-            experiment_id,
             run_button,
         ]
     )
-    return experiment_id, run_button
+    return (run_button,)
 
 
 @app.cell
 def _(
-    experiment_id,
+    json,
     main,
     mo,
     project_root,
+    protocol,
     protocol_path,
     run_button,
-    validate_experiment_id,
 ):
     mo.stop(
         not run_button.value,
         mo.callout("Preview only. Press Run experiment to continue.", kind="info"),
     )
-    selected_experiment_id = validate_experiment_id(experiment_id.value.strip())
+    experiment_root = project_root / "experiments" / protocol.experiment_id
     common_args = [
         "--project-root",
         str(project_root),
-        "--experiment-id",
-        selected_experiment_id,
+        "--file",
+        str(protocol_path),
     ]
 
-    design_exit = main(
-        [
-            "scale-design",
-            *common_args,
-            "--questionnaire",
-            "bfi_10",
-            "--protocol",
-            str(protocol_path),
-            "--model",
-            "gemma4:12b",
-            "--base-url",
-            "http://localhost:11434/v1",
-            "--temperature",
-            "0",
-            "--max-attempts",
-            "3",
-            "--initial-backoff",
-            "1",
-            "--max-backoff",
-            "30",
-            "--max-concurrency",
-            "1",
-            "--seed",
-            "20260609",
-            "--scoring-model-id",
-            "default",
-            "--no-logprobs",
-        ]
+    if not experiment_root.exists():
+        create_exit = main(["protocol-create", *common_args])
+        if create_exit != 0:
+            raise RuntimeError("protocol creation failed")
+
+    existing_run_ids = {
+        path.name for path in experiment_root.glob("run-protocol-*") if path.is_dir()
+    }
+    run_exit = main(
+        ["protocol-create", *common_args, "--new-run", "--api-key", "ollama"]
     )
-    if design_exit != 0:
-        raise RuntimeError("scale-design failed")
-
-    personas_exit = main(["personas", *common_args])
-    if personas_exit != 0:
-        raise RuntimeError("persona materialization failed")
-
-    run_exit = main(["scale-run", *common_args, "--api-key", "ollama"])
     if run_exit != 0:
-        raise RuntimeError("scale run failed")
+        raise RuntimeError("protocol run failed")
 
-    score_exit = main(["scale-score", *common_args])
+    new_run_roots = sorted(
+        path
+        for path in experiment_root.glob("run-protocol-*")
+        if path.is_dir() and path.name not in existing_run_ids
+    )
+    if len(new_run_roots) != 1:
+        raise RuntimeError("expected exactly one new protocol run")
+    run_root = new_run_roots[0]
+    procedure_args = [
+        "--project-root",
+        str(project_root),
+        "--experiment-id",
+        protocol.experiment_id,
+        "--run-id",
+        run_root.name,
+        "--step-id",
+        "personality",
+    ]
+
+    score_exit = main(["scale-score", *procedure_args])
     if score_exit != 0:
         raise RuntimeError("scale scoring failed")
 
-    results_exit = main(["scale-results", *common_args])
+    results_exit = main(["scale-results", *procedure_args])
     if results_exit != 0:
         raise RuntimeError("result export failed")
 
-    experiment_root = project_root / "experiments" / selected_experiment_id
-    run_roots = sorted(path for path in experiment_root.glob("run-*") if path.is_dir())
-    if len(run_roots) != 1:
-        raise RuntimeError("expected exactly one completed run")
-    run_root = run_roots[0]
-    results_root = run_root / "results" / "default-1.0"
-    return experiment_root, results_root, run_root
+    run_record = json.loads((run_root / "run.json").read_text(encoding="utf-8"))
+    cohort_root = experiment_root / "cohorts" / run_record["metadata"]["cohort_id"]
+    step_root = run_root / "steps" / "personality"
+    results_root = step_root / "results" / "default-1.0"
+    return cohort_root, experiment_root, results_root, run_root, step_root
 
 
 @app.cell
-def _(experiment_root, json, mo, results_root, run_root):
+def _(cohort_root, experiment_root, json, mo, results_root, run_root, step_root):
     summary_path = results_root / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     scale_rows = summary["scales"]
@@ -212,14 +198,16 @@ def _(experiment_root, json, mo, results_root, run_root):
                 f"""
                 ## Artifacts
 
-                - Personas: `{experiment_root / "personas.json"}`
-                - Base personas: `{experiment_root / "base_personas.json"}`
-                - Assignments: `{experiment_root / "protocol_assignments.json"}`
+                - Protocol: `{experiment_root / "protocol.json"}`
                 - Experiment run index: `{experiment_root / "metadata.json"}`
+                - Cohort: `{cohort_root}`
+                - Personas: `{cohort_root / "personas.json"}`
+                - Assignments: `{cohort_root / "protocol-assignments.json"}`
                 - Run: `{run_root}`
                 - Run manifest: `{run_root / "run.json"}`
-                - Item ledgers: `{run_root / "responses"}`
-                - Scores: `{run_root / "scoring" / "default-1.0"}`
+                - Questionnaire step: `{step_root}`
+                - Item ledgers: `{step_root / "responses"}`
+                - Scores: `{step_root / "scoring" / "default-1.0"}`
                 - Results: `{results_root}`
                 - Persona-enriched responses: `{results_root / "responses.csv"}`
                 - Summary: `{summary_path}`
