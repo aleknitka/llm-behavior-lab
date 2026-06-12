@@ -17,6 +17,26 @@ uv sync
 The default endpoint is LM Studio at `http://localhost:1234/v1`. Set
 `OPENAI_BASE_URL` and `OPENAI_API_KEY` for another compatible provider.
 
+## Example
+
+The version-controlled
+[`examples/ollama-bfi10-factorial/notebook.py`](examples/ollama-bfi10-factorial/notebook.py)
+previews and runs a complete canonical protocol against local Ollama. It creates
+one base persona, expands it across 12 age, affluence, and urbanicity
+conditions, executes 120 BFI-10 item calls, scores the questionnaire step, and
+exports persona-enriched results.
+
+```bash
+uv sync --group examples
+uv run --group examples marimo edit examples/ollama-bfi10-factorial/notebook.py
+```
+
+The example uses the same immutable protocol, cohort reuse, bounded concurrency,
+provider retry, explicit resume, step scoring, and JSONL ledger behavior
+described below. See
+[`examples/ollama-bfi10-factorial/README.md`](examples/ollama-bfi10-factorial/README.md)
+for the exact Ollama setup and artifact layout.
+
 ## Discover Available Inputs
 
 Inspect questionnaires and persona fields without loading credentials, calling

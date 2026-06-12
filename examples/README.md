@@ -13,5 +13,5 @@ interrupted run can be resumed with the same validated settings.
 
 ## Available Examples
 
-- [`ollama-bfi10-factorial`](ollama-bfi10-factorial/README.md): run a 300-person
-  BFI-10 factorial experiment against a local Ollama model.
+- [`ollama-bfi10-factorial`](ollama-bfi10-factorial/README.md): run a 12-person
+  canonical BFI-10 factorial protocol against a local Ollama model.

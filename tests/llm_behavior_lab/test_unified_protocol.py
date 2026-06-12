@@ -18,7 +18,6 @@ from llm_behavior_lab.protocols import (
     ProtocolQuestionnaireStep,
     ProtocolTaskStep,
     UnifiedExperimentProtocol,
-    load_compatible_protocol,
     protocol_fingerprint,
 )
 from llm_behavior_lab.responses.base import ResponseStatus
@@ -681,7 +680,7 @@ def test_analysis_commands_accept_protocol_step_id() -> None:
     assert analyze.step_id == "decision-task"
 
 
-def test_legacy_design_and_factor_protocol_remain_loadable(tmp_path: Path) -> None:
+def test_legacy_design_remains_loadable(tmp_path: Path) -> None:
     experiment_root = tmp_path / "experiments" / "legacy-study-one"
     experiment_root.mkdir(parents=True)
     (experiment_root / "design.json").write_text(
@@ -700,8 +699,6 @@ def test_legacy_design_and_factor_protocol_remain_loadable(tmp_path: Path) -> No
     )
 
     loaded = load_protocol_experiment(tmp_path, "legacy-study-one")
-    factor = load_compatible_protocol(Path("examples/ollama-bfi10-factorial/protocol.json"))
 
     assert loaded.source == "design.json"
     assert loaded.protocol.experiment_id == "legacy-study-one"
-    assert factor.source == "factor_protocol"
